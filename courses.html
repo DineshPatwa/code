@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Courses — PracticeOps</title>
+  <meta name="description" content="Browse hands-on DevOps courses: Linux, Docker, Kubernetes, Ansible, CI/CD and Terraform." />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body data-page="courses">
+  <div id="nav"></div>
+
+  <section class="page-head">
+    <div class="container">
+      <div class="breadcrumb"><a href="index.html">Home</a> › <span>Courses</span></div>
+      <h1 style="font-size:clamp(30px,4vw,44px)">Hands-on DevOps courses</h1>
+      <p style="color:var(--text-muted);font-size:18px;margin-top:10px;max-width:640px">Pick a track and start completing real tasks on your own infrastructure. Every course is 100% practical.</p>
+    </div>
+  </section>
+
+  <section class="section-sm">
+    <div class="container">
+      <div class="search-box">
+        <span>🔎</span>
+        <input id="search" type="text" placeholder="Search courses — e.g. kubernetes, docker, cron…" />
+      </div>
+      <div class="filters" id="filters"></div>
+      <div style="color:var(--text-dim);font-size:14px;margin-bottom:20px" id="result-count"></div>
+      <div class="grid grid-3" id="catalog"></div>
+    </div>
+  </section>
+
+  <div id="footer"></div>
+
+  <script src="js/config.js"></script>
+  <script src="js/data.js"></script>
+  <script src="js/main.js"></script>
+</body>
+</html>

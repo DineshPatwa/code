@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PracticeOps — Hands-on DevOps practice on your own cloud</title>
+  <meta name="description" content="Practice real Linux, Docker, Kubernetes, Ansible and CI/CD tasks on your own cloud VMs. Task-based learning, no fluff." />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body data-page="home">
+  <div id="nav"></div>
+
+  <!-- ============ HERO ============ -->
+  <header class="hero">
+    <div class="container hero-grid">
+      <div>
+        <span class="badge badge-dot">Practice on your own cloud VMs</span>
+        <h1 style="margin-top:18px">Learn DevOps by <span class="grad-text">doing the actual work</span></h1>
+        <p class="lead">Real, scenario-based tasks in Linux, Docker, Kubernetes, Ansible and CI/CD. Read the objective, do it on your server, verify it works. No video-only theory.</p>
+        <div class="hero-cta">
+          <a href="courses.html" class="btn btn-primary btn-lg">Browse courses →</a>
+          <a href="lab.html?id=linux-admin-1" class="btn btn-ghost btn-lg">Try a sample lab</a>
+        </div>
+        <div class="hero-stats">
+          <div><div class="num grad-text">140+</div><div class="lbl">Hands-on labs</div></div>
+          <div><div class="num grad-text">6</div><div class="lbl">Learning tracks</div></div>
+          <div><div class="num grad-text">100%</div><div class="lbl">Task-based</div></div>
+        </div>
+      </div>
+
+      <!-- Terminal visual -->
+      <div class="terminal-wrap">
+      <div class="terminal">
+        <div class="terminal-bar">
+          <span class="dot dot-r"></span><span class="dot dot-y"></span><span class="dot dot-g"></span>
+          <span class="title">priya@practice-vm: ~</span>
+        </div>
+        <div class="terminal-body">
+          <div><span class="prompt">$</span> <span class="cmd">sudo useradd -m -G developers priya</span></div>
+          <div><span class="prompt">$</span> <span class="cmd">id priya</span></div>
+          <div class="out">uid=1001(priya) gid=1001(priya) groups=1001(priya),1002(developers)</div>
+          <div><span class="prompt">$</span> <span class="cmd">systemctl enable --now nginx</span></div>
+          <div class="ok">✓ Task verified — well done!</div>
+          <div><span class="prompt">$</span> <span class="cursor"></span></div>
+        </div>
+      </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- ============ LOGOS ============ -->
+  <section class="logos">
+    <div class="container">
+      <p class="logos-lbl">Practice the tools teams actually run in production</p>
+      <div class="logos-row">
+        <span>🐧 Linux</span><span>🐳 Docker</span><span>☸️ Kubernetes</span>
+        <span>🅰️ Ansible</span><span>🔁 GitHub Actions</span><span>🏗️ Terraform</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ FEATURES ============ -->
+  <section class="section">
+    <div class="container">
+      <div class="center" style="margin-bottom:52px">
+        <span class="eyebrow">Why PracticeOps</span>
+        <h2 class="section-title">Built for people who learn by <span class="grad-text">building</span></h2>
+        <p class="section-sub">Every lesson is a task with a real objective. You run it on your infrastructure — the skills transfer straight to the job.</p>
+      </div>
+      <div class="grid grid-3">
+        <div class="card feature">
+          <div class="ficon">🎯</div>
+          <h3>Scenario-based tasks</h3>
+          <p>No passive videos. Each lab is a real-world problem — provision a user, ship a container, expose a service — with clear success criteria.</p>
+        </div>
+        <div class="card feature">
+          <div class="ficon">☁️</div>
+          <h3>Use your own cloud</h3>
+          <p>Bring your own AWS, GCP, Azure or home-lab VMs. Practice on real machines you control instead of a sandbox that resets.</p>
+        </div>
+        <div class="card feature">
+          <div class="ficon">🧭</div>
+          <h3>Guided, then on your own</h3>
+          <p>Objectives and hints when you need them, reference commands hidden until you're stuck. Build genuine muscle memory.</p>
+        </div>
+        <div class="card feature">
+          <div class="ficon">📈</div>
+          <h3>Structured tracks</h3>
+          <p>Curated paths from Linux fundamentals to Kubernetes and IaC. Always know what to learn next.</p>
+        </div>
+        <div class="card feature">
+          <div class="ficon">✅</div>
+          <h3>Verify your work</h3>
+          <p>Every task lists exactly how to confirm success, so you know it actually works — not just that it ran.</p>
+        </div>
+        <div class="card feature">
+          <div class="ficon">🏅</div>
+          <h3>Exam-aligned</h3>
+          <p>Kubernetes and Linux tracks map to CKA and LFCS objectives, so practice doubles as certification prep.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ FEATURED COURSES ============ -->
+  <section class="section" id="paths" style="background:var(--bg-2);border-block:1px solid var(--border-soft)">
+    <div class="container">
+      <div class="center" style="margin-bottom:44px">
+        <span class="eyebrow">Learning tracks</span>
+        <h2 class="section-title">Start with a track</h2>
+        <p class="section-sub">Six hands-on tracks covering the modern DevOps stack.</p>
+      </div>
+      <div class="grid grid-3" id="featured-courses"></div>
+      <div class="center" style="margin-top:40px">
+        <a href="courses.html" class="btn btn-ghost btn-lg">View all courses →</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ HOW IT WORKS ============ -->
+  <section class="section">
+    <div class="container">
+      <div class="center" style="margin-bottom:52px">
+        <span class="eyebrow">How it works</span>
+        <h2 class="section-title">Three steps to real skills</h2>
+      </div>
+      <div class="grid grid-3">
+        <div class="card feature">
+          <div class="ficon">①</div>
+          <h3>Spin up a VM</h3>
+          <p>Launch a small Linux VM on your favourite cloud — or use a local VM. We give you a setup guide for each.</p>
+        </div>
+        <div class="card feature">
+          <div class="ficon">②</div>
+          <h3>Open a task</h3>
+          <p>Read the scenario and objective. SSH into your machine and complete the task on real infrastructure.</p>
+        </div>
+        <div class="card feature">
+          <div class="ficon">③</div>
+          <h3>Verify & advance</h3>
+          <p>Check your work against the success criteria, mark it complete, and move to the next task in the track.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ PRICING ============ -->
+  <section class="section" id="pricing" style="background:var(--bg-2);border-block:1px solid var(--border-soft)">
+    <div class="container">
+      <div class="center" style="margin-bottom:44px">
+        <span class="eyebrow">Pricing</span>
+        <h2 class="section-title">Simple, honest pricing</h2>
+        <p class="section-sub">You bring the cloud VMs, we bring the curriculum.</p>
+      </div>
+      <div class="grid grid-3">
+        <div class="card">
+          <h3 style="font-size:20px">Free</h3>
+          <div style="font-size:34px;font-weight:800;margin:10px 0">$0</div>
+          <p style="color:var(--text-muted);font-size:15px">Great for getting started.</p>
+          <ul style="margin:20px 0;display:grid;gap:10px;color:var(--text-muted);font-size:14.5px">
+            <li>✓ Linux fundamentals track</li>
+            <li>✓ 20+ starter labs</li>
+            <li>✓ Community support</li>
+          </ul>
+          <a href="courses.html" class="btn btn-ghost btn-block">Start free</a>
+        </div>
+        <div class="card" style="border-color:var(--brand);box-shadow:var(--shadow)">
+          <span class="badge" style="background:var(--grad);color:#fff;border:none">Most popular</span>
+          <h3 style="font-size:20px;margin-top:12px">Pro</h3>
+          <div style="font-size:34px;font-weight:800;margin:10px 0">$19<span style="font-size:15px;color:var(--text-dim)">/mo</span></div>
+          <p style="color:var(--text-muted);font-size:15px">Full access to every track.</p>
+          <ul style="margin:20px 0;display:grid;gap:10px;color:var(--text-muted);font-size:14.5px">
+            <li>✓ All 6 tracks & 140+ labs</li>
+            <li>✓ Exam-aligned content</li>
+            <li>✓ Progress tracking</li>
+            <li>✓ VM setup guides</li>
+          </ul>
+          <a href="courses.html" class="btn btn-primary btn-block">Go Pro</a>
+        </div>
+        <div class="card">
+          <h3 style="font-size:20px">Teams</h3>
+          <div style="font-size:34px;font-weight:800;margin:10px 0">Custom</div>
+          <p style="color:var(--text-muted);font-size:15px">For companies upskilling engineers.</p>
+          <ul style="margin:20px 0;display:grid;gap:10px;color:var(--text-muted);font-size:14.5px">
+            <li>✓ Everything in Pro</li>
+            <li>✓ Team dashboards</li>
+            <li>✓ SSO & invoicing</li>
+          </ul>
+          <a href="#" class="btn btn-ghost btn-block">Contact sales</a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ FAQ ============ -->
+  <section class="section" id="faq">
+    <div class="container" style="max-width:820px">
+      <div class="center" style="margin-bottom:40px">
+        <span class="eyebrow">FAQ</span>
+        <h2 class="section-title">Questions, answered</h2>
+      </div>
+      <div class="module" style="background:transparent">
+        <div class="hint open"><div class="hint-head" onclick="this.parentElement.classList.toggle('open')"><span>Do I need my own servers?</span><span class="chev">▾</span></div><div class="hint-body">Yes — that's the point. You practice on your own cloud VMs (AWS, GCP, Azure) or local VMs. We provide a free VM setup guide for each provider.</div></div>
+      </div>
+      <div class="module" style="background:transparent">
+        <div class="hint"><div class="hint-head" onclick="this.parentElement.classList.toggle('open')"><span>Is there a browser terminal?</span><span class="chev">▾</span></div><div class="hint-body">Not right now. Working on your own machine builds skills that transfer directly to real infrastructure. A managed lab environment may come later.</div></div>
+      </div>
+      <div class="module" style="background:transparent">
+        <div class="hint"><div class="hint-head" onclick="this.parentElement.classList.toggle('open')"><span>Which topics are covered?</span><span class="chev">▾</span></div><div class="hint-body">Linux administration, Docker, Kubernetes (CKA-aligned), Ansible, CI/CD with GitHub Actions, and Terraform — with more tracks on the way.</div></div>
+      </div>
+      <div class="module" style="background:transparent">
+        <div class="hint"><div class="hint-head" onclick="this.parentElement.classList.toggle('open')"><span>Is it good for certification prep?</span><span class="chev">▾</span></div><div class="hint-body">Absolutely. The Kubernetes and Linux tracks map to CKA and LFCS objectives, so hands-on practice doubles as exam preparation.</div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ CTA ============ -->
+  <section class="section-sm">
+    <div class="container">
+      <div class="cta-band">
+        <h2>Stop watching. Start doing.</h2>
+        <p>Open your first task in under a minute and run it on a real machine.</p>
+        <a href="courses.html" class="btn btn-primary btn-lg">Browse courses →</a>
+      </div>
+    </div>
+  </section>
+
+  <div id="footer"></div>
+
+  <script src="js/config.js"></script>
+  <script src="js/data.js"></script>
+  <script src="js/main.js"></script>
+</body>
+</html>

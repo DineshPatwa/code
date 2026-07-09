@@ -1,0 +1,16 @@
+# VCS / editor
+.git
+.gitignore
+.vscode
+.idea
+
+# Docs & plans (not needed in images)
+*.md
+k8s/
+cloudbuild.yaml
+
+# Local / misc
+claude.ps1
+*.log
+.DS_Store
+Thumbs.db

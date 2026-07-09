@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Course — PracticeOps</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body data-page="courses">
+  <div id="nav"></div>
+
+  <section class="page-head" id="course-detail">
+    <div class="container">
+      <div class="breadcrumb"><a href="index.html">Home</a> › <a href="courses.html">Courses</a> › <span id="cd-crumb">Course</span></div>
+      <span class="badge" id="cd-cat">Category</span>
+      <h1 id="cd-title" style="font-size:clamp(30px,4vw,44px);margin:12px 0">Course title</h1>
+      <p id="cd-summary" style="color:var(--text-muted);font-size:18px;max-width:680px">Summary</p>
+      <div class="course-meta" style="margin-top:18px">
+        <span class="badge level" id="cd-level">level</span>
+        <span>⏱ <span id="cd-hours"></span></span><span class="sep"></span>
+        <span>🧪 <span id="cd-labs"></span></span>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="container detail-grid">
+      <div class="detail-main">
+        <h2 style="margin-top:0">What you'll learn</h2>
+        <ul class="outcomes" id="cd-outcomes"></ul>
+
+        <h2>Curriculum</h2>
+        <div id="cd-curriculum"></div>
+      </div>
+
+      <aside>
+        <div class="card sidebar-card">
+          <div class="price">Free to start</div>
+          <p style="color:var(--text-muted);font-size:14px">Practice on your own cloud VM — no sandbox limits.</p>
+          <a class="btn btn-primary btn-block" id="cd-firstlab" href="#" style="margin:18px 0 6px">Start first lab →</a>
+          <a class="btn btn-ghost btn-block" href="courses.html">Back to catalog</a>
+          <ul>
+            <li><span class="ic">🧪</span> <span><span id="cd-tasktotal"></span> hands-on tasks</span></li>
+            <li><span class="ic">⏱</span> <span>~<span id="cd-hours2"></span> hours of practice</span></li>
+            <li><span class="ic">☁️</span> <span>Runs on your infrastructure</span></li>
+            <li><span class="ic">✅</span> <span>Clear success criteria</span></li>
+            <li><span class="ic">♾️</span> <span>Lifetime access</span></li>
+          </ul>
+        </div>
+      </aside>
+    </div>
+  </section>
+
+  <div id="footer"></div>
+
+  <script src="js/config.js"></script>
+  <script src="js/data.js"></script>
+  <script src="js/main.js"></script>
+</body>
+</html>

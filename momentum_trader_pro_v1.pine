@@ -1,0 +1,187 @@
+1
+//@version=6
+// =============================================================================
+//  MOMENTUM TRADER PRO  —  V1  (Core Strategy)
+//  Platform : TradingView Pine Script v6
+//  Market   : NSE equities (intraday)  |  Timezone: Asia/Kolkata
+//  Suggested chart timeframe: 5 min (works on 3/5/15 min)
+//
+//  V1 FEATURES
+//    - Opening Range Breakout (09:15–09:30)
+//    - VWAP filter
+//    - EMA20 / EMA50 trend filter
+//    - Volume spike (relative volume) filter
+//    - ATR-based Stop Loss
+//    - 2R fixed Target
+//    - Buy / Sell arrows
+//    - Backtesting (native Strategy Tester)
+//
+//  NO-REPAINT DESIGN
+//    Signals are evaluated on CONFIRMED bar close (calc_on_every_tick is off in
+//    backtest). Orders fill on the NEXT bar's open (process_orders_on_close=false),
+//    which mirrors realistic execution. No request.security lookahead is used.
+// =============================================================================
+
+strategy(
+     title              = "Momentum Trader Pro V1",
+     shorttitle         = "MTP v1",
+     overlay            = true,
+     pyramiding         = 0,
+     initial_capital    = 100000,
+     default_qty_type   = strategy.percent_of_equity,
+     default_qty_value  = 20,
+     commission_type    = strategy.commission.percent,
+     commission_value   = 0.03,          // ~ brokerage+charges approx per side
+     slippage           = 2,             // ticks
+     calc_on_every_tick = false,
+     process_orders_on_close = false)
+
+// -----------------------------------------------------------------------------
+//  INPUTS
+// -----------------------------------------------------------------------------
+grpOR   = "Opening Range"
+orStart = input.session("0915-0930", "OR window (build)", group = grpOR,
+             tooltip = "Range is built during this window; breakouts are taken AFTER it.")
+tz      = "Asia/Kolkata"
+
+grpTr   = "Trend / VWAP"
+emaFastLen = input.int(20, "EMA Fast", minval = 1, group = grpTr)
+emaSlowLen = input.int(50, "EMA Slow", minval = 1, group = grpTr)
+useVwap    = input.bool(true, "Require VWAP alignment", group = grpTr)
+useEma     = input.bool(true, "Require EMA20/50 alignment", group = grpTr)
+
+grpVol  = "Volume Spike"
+useVol  = input.bool(true, "Require volume spike", group = grpVol)
+volLen  = input.int(20, "Volume avg length", minval = 1, group = grpVol)
+volMult = input.float(1.5, "Volume multiplier (RelVol)", minval = 1.0, step = 0.1, group = grpVol)
+
+grpRisk = "Risk / Exits"
+atrLen  = input.int(14, "ATR length", minval = 1, group = grpRisk)
+atrMult = input.float(1.5, "ATR stop multiplier", minval = 0.1, step = 0.1, group = grpRisk)
+rrMult  = input.float(2.0, "Reward:Risk (target)", minval = 0.5, step = 0.5, group = grpRisk)
+
+grpDir  = "Direction"
+allowLongs  = input.bool(true, "Allow Longs", group = grpDir)
+allowShorts = input.bool(true, "Allow Shorts", group = grpDir)
+
+// -----------------------------------------------------------------------------
+//  INDICATORS
+// -----------------------------------------------------------------------------
+emaFast = ta.ema(close, emaFastLen)
+emaSlow = ta.ema(close, emaSlowLen)
+vwap    = ta.vwap
+atr     = ta.atr(atrLen)
+volAvg  = ta.sma(volume, volLen)
+
+// -----------------------------------------------------------------------------
+//  SESSION / OPENING RANGE
+//  time(period, session, tz) returns a value only when the bar is inside the
+//  session window, na otherwise — used to detect the OR-building phase.
+// -----------------------------------------------------------------------------
+inOR    = not na(time(timeframe.period, orStart, tz))
+newDay  = ta.change(time("D")) != 0
+
+var float orHigh   = na
+var float orLow    = na
+var bool  orReady  = false     // true once the OR window has fully closed today
+
+// Reset at the start of each new session
+if newDay
+    orHigh  := na
+    orLow   := na
+    orReady := false
+
+// Build the range during the OR window
+if inOR
+    orHigh := na(orHigh) ? high : math.max(orHigh, high)
+    orLow  := na(orLow)  ? low  : math.min(orLow, low)
+
+// The moment we leave the OR window (and a range exists) -> range is locked/ready
+if (not inOR) and (not na(orHigh)) and (not orReady) and (not newDay)
+    orReady := true
+
+// -----------------------------------------------------------------------------
+//  FILTERS
+// -----------------------------------------------------------------------------
+trendUp    = (not useEma)  or (emaFast > emaSlow)
+trendDn    = (not useEma)  or (emaFast < emaSlow)
+vwapUp     = (not useVwap) or (close > vwap)
+vwapDn     = (not useVwap) or (close < vwap)
+volSpike   = (not useVol)  or (volume > volAvg * volMult)
+
+// Only look for entries after the OR is ready and only while flat
+afterOR    = orReady and (not inOR)
+isFlat     = strategy.position_size == 0
+
+// -----------------------------------------------------------------------------
+//  ENTRY SIGNALS  (confirmed-close breakout beyond the opening range)
+// -----------------------------------------------------------------------------
+breakoutUp = close > orHigh
+breakoutDn = close < orLow
+
+longSignal  = allowLongs  and afterOR and isFlat and breakoutUp and trendUp and vwapUp and volSpike
+shortSignal = allowShorts and afterOR and isFlat and breakoutDn and trendDn and vwapDn and volSpike
+
+// -----------------------------------------------------------------------------
+//  RISK MODEL  (captured at signal bar; entry approximated by close)
+//    risk   = ATR * atrMult
+//    stop   = entry -/+ risk
+//    target = entry +/- risk * rrMult
+// -----------------------------------------------------------------------------
+var float entryPx = na
+var float stopPx  = na
+var float tgtPx   = na
+
+if longSignal
+    entryPx := close
+    stopPx  := close - atr * atrMult
+    tgtPx   := close + atr * atrMult * rrMult
+    strategy.entry("Long", strategy.long)
+    strategy.exit("L-exit", from_entry = "Long", stop = stopPx, limit = tgtPx)
+
+if shortSignal
+    entryPx := close
+    stopPx  := close + atr * atrMult
+    tgtPx   := close - atr * atrMult * rrMult
+    strategy.entry("Short", strategy.short)
+    strategy.exit("S-exit", from_entry = "Short", stop = stopPx, limit = tgtPx)
+
+// -----------------------------------------------------------------------------
+//  PLOTS
+// -----------------------------------------------------------------------------
+plot(emaFast, "EMA20", color = color.new(color.orange, 0), linewidth = 1)
+plot(emaSlow, "EMA50", color = color.new(color.blue, 0),   linewidth = 1)
+plot(vwap,    "VWAP",  color = color.new(color.fuchsia, 0), linewidth = 2)
+
+// Opening range levels (only draw once the range is being built / ready today)
+plot(orReady or inOR ? orHigh : na, "OR High", color = color.new(color.teal, 0),
+     style = plot.style_linebr, linewidth = 1)
+plot(orReady or inOR ? orLow  : na, "OR Low",  color = color.new(color.red, 0),
+     style = plot.style_linebr, linewidth = 1)
+
+// Shade the OR-building window
+bgcolor(inOR ? color.new(color.gray, 88) : na, title = "OR window")
+
+// Buy / Sell arrows
+plotshape(longSignal,  title = "BUY",  style = shape.triangleup,   location = location.belowbar,
+     color = color.new(color.green, 0), size = size.small, text = "BUY")
+plotshape(shortSignal, title = "SELL", style = shape.triangledown, location = location.abovebar,
+     color = color.new(color.red, 0),   size = size.small, text = "SELL")
+
+// -----------------------------------------------------------------------------
+//  DIAGNOSTICS TABLE (light — full dashboard arrives in V3)
+// -----------------------------------------------------------------------------
+var table t = table.new(position.top_right, 2, 4, border_width = 1)
+if barstate.islast
+    table.cell(t, 0, 0, "Trend",   text_color = color.white, bgcolor = color.new(color.gray, 30))
+    table.cell(t, 1, 0, emaFast > emaSlow ? "Bullish" : "Bearish",
+         text_color = emaFast > emaSlow ? color.lime : color.red, bgcolor = color.new(color.black, 30))
+    table.cell(t, 0, 1, "VWAP",    text_color = color.white, bgcolor = color.new(color.gray, 30))
+    table.cell(t, 1, 1, close > vwap ? "Above" : "Below",
+         text_color = close > vwap ? color.lime : color.red, bgcolor = color.new(color.black, 30))
+    table.cell(t, 0, 2, "RelVol",  text_color = color.white, bgcolor = color.new(color.gray, 30))
+    table.cell(t, 1, 2, str.tostring(volAvg > 0 ? volume / volAvg : 0, "#.0#") + "x",
+         text_color = color.white, bgcolor = color.new(color.black, 30))
+    table.cell(t, 0, 3, "RR",      text_color = color.white, bgcolor = color.new(color.gray, 30))
+    table.cell(t, 1, 3, str.tostring(rrMult, "#.0#"),
+         text_color = color.white, bgcolor = color.new(color.black, 30))

@@ -1,0 +1,48 @@
+# ---- PracticeOps practice terminal image ----
+# Ubuntu + ttyd (web terminal) + a lean set of DevOps CLI tools.
+FROM ubuntu:22.04
+
+ARG TTYD_VERSION=1.7.7
+ARG KUBECTL_VERSION=v1.30.2
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Core tools for Linux + K8s practice
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        bash \
+        ca-certificates \
+        curl \
+        git \
+        vim \
+        nano \
+        openssh-client \
+        iproute2 \
+        iputils-ping \
+        net-tools \
+        dnsutils \
+        sudo \
+        less \
+        procps \
+    && rm -rf /var/lib/apt/lists/*
+
+# ttyd (static binary from GitHub releases)
+RUN curl -fsSL -o /usr/local/bin/ttyd \
+      "https://github.com/tsl0922/ttyd/releases/download/${TTYD_VERSION}/ttyd.x86_64" \
+    && chmod +x /usr/local/bin/ttyd
+
+# kubectl
+RUN curl -fsSL -o /usr/local/bin/kubectl \
+      "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl" \
+    && chmod +x /usr/local/bin/kubectl
+
+# A friendly non-root practice user with passwordless sudo
+RUN useradd -m -s /bin/bash practice \
+    && echo 'practice ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/practice \
+    && chmod 0440 /etc/sudoers.d/practice
+
+COPY docker/start-ttyd.sh /usr/local/bin/start-ttyd.sh
+RUN chmod +x /usr/local/bin/start-ttyd.sh
+
+EXPOSE 7681
+
+# Basic-auth credentials are injected at runtime via TTYD_USER / TTYD_PASS
+ENTRYPOINT ["/usr/local/bin/start-ttyd.sh"]

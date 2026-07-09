@@ -1,0 +1,49 @@
+# Google Cloud Build — builds & pushes both images to Artifact Registry.
+# No local Docker needed. Run with:
+#   gcloud builds submit --config cloudbuild.yaml \
+#     --substitutions=_REGION=us-central1,_REPO=practiceops,_TAG=v1
+#
+# Images land at:
+#   ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/practiceops-web:${_TAG}
+#   ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/practiceops-terminal:${_TAG}
+
+substitutions:
+  _REGION: us-central1
+  _REPO: practiceops
+  _TAG: v1
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+steps:
+  # ---- web image ----
+  - name: gcr.io/cloud-builders/docker
+    id: build-web
+    args:
+      - build
+      - -f
+      - Dockerfile.web
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/practiceops-web:${_TAG}
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/practiceops-web:latest
+      - .
+
+  # ---- terminal image ----
+  - name: gcr.io/cloud-builders/docker
+    id: build-terminal
+    args:
+      - build
+      - -f
+      - Dockerfile.terminal
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/practiceops-terminal:${_TAG}
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/practiceops-terminal:latest
+      - .
+
+images:
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/practiceops-web:${_TAG}
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/practiceops-web:latest
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/practiceops-terminal:${_TAG}
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/practiceops-terminal:latest

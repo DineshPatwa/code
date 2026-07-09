@@ -1,0 +1,226 @@
+//@version=6
+// =============================================================================
+//  MOMENTUM TRADER PRO  —  V2  (Core Strategy + Risk Management)
+//  Platform : TradingView Pine Script v6   |   Market: NSE equities (intraday)
+//  Timezone : Asia/Kolkata                 |   Suggested TF: 5 min
+//
+//  BUILDS ON V1 (ORB + VWAP + EMA20/50 + Volume + ATR stop + 2R target + arrows)
+//
+//  V2 ADDS — RISK MANAGEMENT (all rules objective, evaluated on confirmed close)
+//    - Maximum trades/day (default 2)   — every entry counts (long or short)
+//    - Daily loss limit  (₹ absolute)   — blocks (and optionally closes) on hit
+//    - Daily profit limit (₹ absolute)  — blocks (and optionally closes) on hit
+//    - No NEW trades after 14:30
+//    - Force exit ALL positions at 15:20
+//
+//  NO-REPAINT: signals on confirmed close, fills next bar open, no lookahead.
+// =============================================================================
+
+strategy(
+     title              = "Momentum Trader Pro V2",
+     shorttitle         = "MTP v2",
+     overlay            = true,
+     pyramiding         = 0,
+     initial_capital    = 100000,
+     default_qty_type   = strategy.percent_of_equity,
+     default_qty_value  = 20,
+     commission_type    = strategy.commission.percent,
+     commission_value   = 0.03,
+     slippage           = 2,
+     calc_on_every_tick = false,
+     process_orders_on_close = false)
+
+// -----------------------------------------------------------------------------
+//  INPUTS
+// -----------------------------------------------------------------------------
+tz = "Asia/Kolkata"
+
+grpOR   = "Opening Range"
+orStart = input.session("0915-0930", "OR window (build)", group = grpOR)
+
+grpTr   = "Trend / VWAP"
+emaFastLen = input.int(20, "EMA Fast", minval = 1, group = grpTr)
+emaSlowLen = input.int(50, "EMA Slow", minval = 1, group = grpTr)
+useVwap    = input.bool(true, "Require VWAP alignment", group = grpTr)
+useEma     = input.bool(true, "Require EMA20/50 alignment", group = grpTr)
+
+grpVol  = "Volume Spike"
+useVol  = input.bool(true, "Require volume spike", group = grpVol)
+volLen  = input.int(20, "Volume avg length", minval = 1, group = grpVol)
+volMult = input.float(1.5, "Volume multiplier (RelVol)", minval = 1.0, step = 0.1, group = grpVol)
+
+grpRisk = "Risk / Exits"
+atrLen  = input.int(14, "ATR length", minval = 1, group = grpRisk)
+atrMult = input.float(1.5, "ATR stop multiplier", minval = 0.1, step = 0.1, group = grpRisk)
+rrMult  = input.float(2.0, "Reward:Risk (target)", minval = 0.5, step = 0.5, group = grpRisk)
+
+grpDir  = "Direction"
+allowLongs  = input.bool(true, "Allow Longs", group = grpDir)
+allowShorts = input.bool(true, "Allow Shorts", group = grpDir)
+
+// ---- V2 : Risk Management inputs -------------------------------------------
+grpMM        = "V2 · Risk Management"
+maxTrades    = input.int(2, "Max trades / day", minval = 1, group = grpMM)
+dailyLoss    = input.float(2000, "Daily loss limit (₹)",   minval = 0, step = 100, group = grpMM,
+                 tooltip = "Stop for the day once realized+open P/L falls to −this value.")
+dailyProfit  = input.float(3000, "Daily profit limit (₹)", minval = 0, step = 100, group = grpMM,
+                 tooltip = "Stop for the day once realized+open P/L rises to +this value.")
+closeOnLimit = input.bool(true, "Close open trade when a daily limit is hit", group = grpMM)
+noNewAfter   = input.session("0930-1430", "New-entry window", group = grpMM,
+                 tooltip = "New entries allowed only inside this window (no new trades after 14:30).")
+forceExitStr = input.session("1520-1525", "Force-exit window", group = grpMM,
+                 tooltip = "All open positions closed when price enters this window (~15:20).")
+
+// -----------------------------------------------------------------------------
+//  INDICATORS
+// -----------------------------------------------------------------------------
+emaFast = ta.ema(close, emaFastLen)
+emaSlow = ta.ema(close, emaSlowLen)
+vwap    = ta.vwap
+atr     = ta.atr(atrLen)
+volAvg  = ta.sma(volume, volLen)
+
+// -----------------------------------------------------------------------------
+//  SESSION / OPENING RANGE
+// -----------------------------------------------------------------------------
+inOR    = not na(time(timeframe.period, orStart, tz))
+newDay  = ta.change(time("D")) != 0
+
+var float orHigh   = na
+var float orLow    = na
+var bool  orReady  = false
+
+if newDay
+    orHigh  := na
+    orLow   := na
+    orReady := false
+
+if inOR
+    orHigh := na(orHigh) ? high : math.max(orHigh, high)
+    orLow  := na(orLow)  ? low  : math.min(orLow, low)
+
+if (not inOR) and (not na(orHigh)) and (not orReady) and (not newDay)
+    orReady := true
+
+// -----------------------------------------------------------------------------
+//  V2 : DAILY STATE TRACKING
+// -----------------------------------------------------------------------------
+var int   tradesToday      = 0
+var float dayStartNet      = 0.0      // realized net profit snapshot at day start
+var bool  limitHitToday    = false    // latched once a daily ₹ limit is breached
+
+if newDay
+    tradesToday   := 0
+    dayStartNet   := strategy.netprofit
+    limitHitToday := false
+
+// Live daily P/L = realized-since-day-start + current open P/L
+dailyPnL   = (strategy.netprofit - dayStartNet) + strategy.openprofit
+lossHit    = dailyLoss   > 0 and dailyPnL <= -dailyLoss
+profitHit  = dailyProfit > 0 and dailyPnL >=  dailyProfit
+if lossHit or profitHit
+    limitHitToday := true
+
+// Time gates
+inEntryWindow = not na(time(timeframe.period, noNewAfter,  tz))
+inForceExit   = not na(time(timeframe.period, forceExitStr, tz))
+
+// -----------------------------------------------------------------------------
+//  FILTERS
+// -----------------------------------------------------------------------------
+trendUp    = (not useEma)  or (emaFast > emaSlow)
+trendDn    = (not useEma)  or (emaFast < emaSlow)
+vwapUp     = (not useVwap) or (close > vwap)
+vwapDn     = (not useVwap) or (close < vwap)
+volSpike   = (not useVol)  or (volume > volAvg * volMult)
+
+afterOR    = orReady and (not inOR)
+isFlat     = strategy.position_size == 0
+
+// V2 master gate: all risk rules must pass to allow a NEW entry
+canTrade   = afterOR and isFlat and inEntryWindow and (not inForceExit) and
+             (tradesToday < maxTrades) and (not limitHitToday)
+
+// -----------------------------------------------------------------------------
+//  ENTRY SIGNALS
+// -----------------------------------------------------------------------------
+breakoutUp = close > orHigh
+breakoutDn = close < orLow
+
+longSignal  = allowLongs  and canTrade and breakoutUp and trendUp and vwapUp and volSpike
+shortSignal = allowShorts and canTrade and breakoutDn and trendDn and vwapDn and volSpike
+
+// -----------------------------------------------------------------------------
+//  RISK MODEL + ORDERS
+// -----------------------------------------------------------------------------
+var float entryPx = na
+var float stopPx  = na
+var float tgtPx   = na
+
+if longSignal
+    entryPx := close
+    stopPx  := close - atr * atrMult
+    tgtPx   := close + atr * atrMult * rrMult
+    strategy.entry("Long", strategy.long)
+    strategy.exit("L-exit", from_entry = "Long", stop = stopPx, limit = tgtPx)
+    tradesToday += 1
+
+if shortSignal
+    entryPx := close
+    stopPx  := close + atr * atrMult
+    tgtPx   := close - atr * atrMult * rrMult
+    strategy.entry("Short", strategy.short)
+    strategy.exit("S-exit", from_entry = "Short", stop = stopPx, limit = tgtPx)
+    tradesToday += 1
+
+// V2 : forced/limit exits (override open trades)
+if inForceExit and strategy.position_size != 0
+    strategy.close_all(comment = "EOD 15:20")
+
+if limitHitToday and closeOnLimit and strategy.position_size != 0
+    strategy.close_all(comment = lossHit ? "Daily loss limit" : "Daily profit limit")
+
+// -----------------------------------------------------------------------------
+//  PLOTS
+// -----------------------------------------------------------------------------
+plot(emaFast, "EMA20", color = color.new(color.orange, 0), linewidth = 1)
+plot(emaSlow, "EMA50", color = color.new(color.blue, 0),   linewidth = 1)
+plot(vwap,    "VWAP",  color = color.new(color.fuchsia, 0), linewidth = 2)
+
+plot(orReady or inOR ? orHigh : na, "OR High", color = color.new(color.teal, 0),
+     style = plot.style_linebr, linewidth = 1)
+plot(orReady or inOR ? orLow  : na, "OR Low",  color = color.new(color.red, 0),
+     style = plot.style_linebr, linewidth = 1)
+
+bgcolor(inOR ? color.new(color.gray, 88) : na, title = "OR window")
+bgcolor(limitHitToday ? color.new(color.red, 90) : na, title = "Day halted (limit)")
+
+plotshape(longSignal,  title = "BUY",  style = shape.triangleup,   location = location.belowbar,
+     color = color.new(color.green, 0), size = size.small, text = "BUY")
+plotshape(shortSignal, title = "SELL", style = shape.triangledown, location = location.abovebar,
+     color = color.new(color.red, 0),   size = size.small, text = "SELL")
+
+// -----------------------------------------------------------------------------
+//  V2 DIAGNOSTICS TABLE  (grows into full dashboard in V3)
+// -----------------------------------------------------------------------------
+var table t = table.new(position.top_right, 2, 5, border_width = 1)
+if barstate.islast
+    plColor = dailyPnL >= 0 ? color.lime : color.red
+    table.cell(t, 0, 0, "Trend",  text_color = color.white, bgcolor = color.new(color.gray, 30))
+    table.cell(t, 1, 0, emaFast > emaSlow ? "Bullish" : "Bearish",
+         text_color = emaFast > emaSlow ? color.lime : color.red, bgcolor = color.new(color.black, 30))
+    table.cell(t, 0, 1, "VWAP",   text_color = color.white, bgcolor = color.new(color.gray, 30))
+    table.cell(t, 1, 1, close > vwap ? "Above" : "Below",
+         text_color = close > vwap ? color.lime : color.red, bgcolor = color.new(color.black, 30))
+    table.cell(t, 0, 2, "Trades", text_color = color.white, bgcolor = color.new(color.gray, 30))
+    table.cell(t, 1, 2, str.tostring(tradesToday) + " / " + str.tostring(maxTrades),
+         text_color = color.white, bgcolor = color.new(color.black, 30))
+    table.cell(t, 0, 3, "Day P/L", text_color = color.white, bgcolor = color.new(color.gray, 30))
+    table.cell(t, 1, 3, "₹" + str.tostring(dailyPnL, "#.##"),
+         text_color = plColor, bgcolor = color.new(color.black, 30))
+    table.cell(t, 0, 4, "Status",  text_color = color.white, bgcolor = color.new(color.gray, 30))
+    statusTxt = limitHitToday ? (lossHit ? "STOP: loss" : "STOP: profit") :
+                 not inEntryWindow ? "No new (time)" :
+                 tradesToday >= maxTrades ? "Max trades" : "Active"
+    table.cell(t, 1, 4, statusTxt,
+         text_color = limitHitToday ? color.red : color.aqua, bgcolor = color.new(color.black, 30))

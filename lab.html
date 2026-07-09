@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Lab — PracticeOps</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body data-page="courses">
+  <div id="nav"></div>
+
+  <section class="page-head" style="padding-block:22px">
+    <div class="container lab-toolbar">
+      <div class="breadcrumb" id="lab-crumb" style="margin-bottom:0"><a href="index.html">Home</a> › <span>Lab</span></div>
+      <button class="btn btn-primary" id="term-toggle">💻 Open terminal</button>
+    </div>
+  </section>
+
+  <section>
+    <div class="container">
+      <div class="lab-workspace" id="lab-workspace">
+        <div class="lab-left">
+          <div id="lab-content"></div>
+          <aside class="lab-side" id="lab-side"></aside>
+        </div>
+        <div class="term-pane" id="term-pane"></div>
+      </div>
+    </div>
+  </section>
+
+  <div id="footer"></div>
+
+  <script src="js/config.js"></script>
+  <script src="js/data.js"></script>
+  <script src="js/main.js"></script>
+</body>
+</html>

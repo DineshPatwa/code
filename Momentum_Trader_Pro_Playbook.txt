@@ -1,0 +1,215 @@
+===============================================================================
+              MOMENTUM TRADER PRO  —  TRADING PLAYBOOK & RULES
+              Platform : TradingView (Pine Script v6)
+              Market   : NSE Equities (Intraday)  |  Timezone: Asia/Kolkata
+              Chart    : 5-minute
+              File set : momentum_trader_pro_v6.pine  (full smart version)
+===============================================================================
+
+Golden Rule:  IF THERE IS NO ARROW, THERE IS NO TRADE.
+              Every number you need (Entry, Stop, Target, Qty, Risk) is printed
+              on the chart. No guessing. No "feel". Just follow the ticket.
+
+===============================================================================
+ SECTION 1  —  DAILY TIMELINE (do these in order every day)
+===============================================================================
+
+------------------------------------------------------------------------------
+ STEP 1  —  BEFORE 9:15 AM  (Pre-market prep)
+------------------------------------------------------------------------------
+ 1. Open the NSE Heatmap (or TradingView Stock Heatmap: NIFTY 50 / NIFTY 500,
+    colored by % change).
+ 2. Find the 1-2 STRONGEST GREEN SECTORS (e.g. IT, Banking, Auto).
+    - A strong stock in a weak sector often fails. Sector strength matters.
+ 3. Inside those sectors, shortlist the 2-4 MOST BULLISH stocks
+    (biggest green move + high volume).
+ 4. Check NIFTY itself:
+    - NIFTY green / above yesterday's close  -> favor BUY setups.
+    - NIFTY red / falling                    -> favor SELL setups or trade nothing.
+    (The script's NIFTY filter enforces this automatically.)
+ 5. Add your shortlist to a TradingView watchlist.
+    Apply the V6 strategy to each chart:
+       - Timeframe = 5 minute
+       - Timezone  = Asia/Kolkata  (right-click time axis -> Timezone -> Kolkata)
+
+ RULE: Don't marry one stock. Pick 3-4, let the STRATEGY decide which triggers.
+
+------------------------------------------------------------------------------
+ STEP 2  —  9:15 to 9:30 AM  (Watch only, DO NOT trade)
+------------------------------------------------------------------------------
+ - This is the OPENING RANGE = the grey shaded band on the chart.
+ - NO TRADES here. You are only letting the OR High / OR Low lines form.
+ - Gap check: if a stock opened more than ~2% above/below yesterday's close,
+   the script blocks it (gap guard). Skip it - breakouts fail after big gaps.
+
+------------------------------------------------------------------------------
+ STEP 3  —  AFTER 9:30 AM  (Hunt for the signal)
+------------------------------------------------------------------------------
+ Take a trade ONLY when the script prints a  BUY (green)  or  SELL (red)  label.
+ That label fires only when ALL of this is true on a CLOSED 5-min candle:
+
+   1. Price crosses above OR High (BUY) / below OR Low (SELL)  = breakout candle
+   2. Score >= 100 / 120   = at least 5 of 6 quality filters agree
+   3. Time is within 9:30 - 14:30
+   4. Not lunch time (12:00 - 13:00 is skipped)
+   5. Fewer than 2 trades used today
+   6. Daily loss/profit limit not yet hit
+
+ The 6 filters inside the SCORE (each worth 20 points):
+   [ ] Price above VWAP
+   [ ] EMA20 > EMA50 (trend up)
+   [ ] ADX > 20            (real trend, not sideways chop)
+   [ ] RVOL > 1.5          (volume surge vs average)
+   [ ] NIFTY trending your direction
+   [ ] Stock stronger than NIFTY (relative strength)
+
+ RULE: No arrow = the setup isn't good enough. Do NOT force a trade.
+
+------------------------------------------------------------------------------
+ STEP 4  —  WHEN THE ARROW APPEARS  (Log the paper trade)
+------------------------------------------------------------------------------
+ Read the TRADE TICKET panel (bottom-right of chart) and write it down EXACTLY:
+
+       Stock   : INFY
+       Side    : BUY
+       Entry   : 1624.00      <- your entry price
+       Stop    : 1617.00      <- exit here if wrong
+       Target  : 1638.00      <- exit here if right (2R)
+       Qty     : 71           <- position size (shares)
+       Risk    : Rs 497       <- maximum you can lose on this trade
+       Score   : 110/120
+       Time    : 9:45
+
+ That is your entire trade. Every number is given - nothing to calculate.
+
+------------------------------------------------------------------------------
+ STEP 5  —  MANAGING THE TRADE  (hands off)
+------------------------------------------------------------------------------
+ - Do NOTHING until price hits either the Stop or the Target.
+ - Hits TARGET  -> WIN  (+2R, about +Rs 1000 on Rs 500 risk). Log it.
+ - Hits STOP    -> LOSS (-1R, about -Rs 500). Log it. Losses are normal.
+ - NEVER widen your stop to avoid a loss. That is the #1 way to blow up.
+
+------------------------------------------------------------------------------
+ STEP 6  —  EXITS & DAILY STOP RULES
+------------------------------------------------------------------------------
+ - Max 2 trades per day. After 2 entries you are DONE for the day.
+ - Daily loss limit  -Rs 2000  -> stop trading, walk away.
+ - Daily profit limit +Rs 3000 -> stop trading, protect the win.
+ - No NEW trades after 14:30.
+ - Force-exit any open trade at 15:20 (never hold into the close).
+
+===============================================================================
+ SECTION 2  —  ONE-LINE SUMMARY
+===============================================================================
+ Pick strong stocks from strong sectors before 9:15 -> wait out the 9:15-9:30
+ range -> take ONLY the arrow the script prints, at the exact Entry/Stop/Target/
+ Qty on the ticket -> let it hit stop or target -> stop after 2 trades or the
+ daily limit.
+
+===============================================================================
+ SECTION 3  —  HOW POSITION SIZE IS CALCULATED (so you understand the Qty)
+===============================================================================
+ Risk per share = Entry - Stop            (Stop = Entry - ATR x 1.5, tick-rounded)
+ Rupees to risk = Capital x Risk %         (e.g. 100000 x 0.5% = Rs 500)
+ Quantity       = floor(Rupees to risk / Risk per share)
+ Example        : floor(500 / 7.00) = 71 shares ;  Total risk = 71 x 7 = Rs 497
+
+ Set your Capital and Risk % in:
+   Strategy Settings -> Inputs -> "Position Sizing (V7)"
+
+===============================================================================
+ SECTION 4  —  HOW TO GET NOTIFICATIONS (TradingView Alerts)
+===============================================================================
+ The script already sends a full alert (Entry, Stop, Target, Qty, Risk, Score)
+ every time a BUY/SELL fires. You just have to create ONE alert to receive them.
+
+ ---- A. Install the mobile app (for phone push notifications) -----------------
+ 1. Install "TradingView" app on Android/iOS.
+ 2. Log in with the SAME account you use on the desktop/web.
+ 3. Allow notifications for the app in your phone settings.
+
+ ---- B. Create the alert (do this on desktop/web) -----------------------------
+ 1. Open the 5-min chart of the stock and make sure "Momentum Trader Pro V6"
+    is added to the chart.
+ 2. Click the ALARM CLOCK icon (right toolbar) OR press the "Alert" button,
+    OR right-click the chart -> "Add alert".
+ 3. In the "Condition" dropdown (first row):
+        - Select:  Momentum Trader Pro V6
+        - Second dropdown: choose  "alert() function calls only"
+          (this is what sends the ticket text - do NOT pick a plot condition)
+ 4. "Trigger" / frequency: set to  "Once Per Bar Close".
+        (Matches the no-repaint design; alert fires on the confirmed candle.)
+ 5. Expiration: on paid plans set a far date; free plan alerts may expire.
+ 6. Go to the "Notifications" tab and enable what you want:
+        [x] Notify on app        (phone push - needs the mobile app, step A)
+        [x] Show pop-up          (desktop pop-up)
+        [x] Play sound
+        [x] Send email
+        [ ] Webhook URL          (advanced - for auto-trading via a broker bridge)
+ 7. Click "Create".
+
+ ---- C. What you receive ------------------------------------------------------
+ When a signal fires you get a message like:
+
+        BUY INFY
+        Entry : 1624.00
+        Stop  : 1617.00  (7.00/sh)
+        Tgt   : 1638.00  (2.0R)
+        Qty   : 71
+        Risk  : Rs 497
+        Score : 110/120
+
+ ---- D. Important notes -------------------------------------------------------
+ - You need ONE alert PER STOCK you want to watch. Watching 4 stocks = 4 alerts.
+ - FREE TradingView plan = only 1-2 active alerts at a time. Paid plans allow
+   many more. Plan your watchlist around your alert limit.
+ - The chart/alert must stay running on TradingView's servers (once created,
+   server-side alerts run even if your browser is closed - that's normal).
+ - "Once Per Bar Close" means the alert arrives a few seconds AFTER the 5-min
+   candle closes - this is correct and non-repainting. Do not switch to
+   "Once Per Bar" (that can fire mid-candle and repaint).
+
+ ---- E. (Optional) Auto-trading via Webhook -----------------------------------
+ The Webhook option can POST the alert to a broker bridge (e.g. a service that
+ connects to Zerodha/Dhan/etc.). This is advanced, needs a third-party bridge,
+ and carries real execution risk. Do NOT enable until you have paper-traded
+ successfully for weeks. Ask if you want this set up later.
+
+===============================================================================
+ SECTION 5  —  PAPER-TRADING DISCIPLINE
+===============================================================================
+ 1. Keep a journal (spreadsheet) with:
+        Date | Stock | Side | Entry | Stop | Target | Qty | Result(Rs) | Score | Notes
+ 2. Trade like it is real money - same 2-trade cap, same daily limits.
+ 3. Do at least 30-50 trades before judging the strategy. One week = nothing.
+ 4. Watch two numbers on the dashboard:
+        Win Rate       - % of trades that hit target
+        Profit Factor  - gross profit / gross loss (above 1.5 is good)
+ 5. If win rate is low, RAISE "Minimum score to trade" to 120 (needs all 6
+    filters) -> fewer trades but higher quality.
+ 6. Review your journal weekly. Look for patterns: which sector, which time,
+    which score range wins most.
+
+===============================================================================
+ SECTION 6  —  QUICK REFERENCE (default settings)
+===============================================================================
+ OR window ............. 09:15 - 09:30
+ Entry trigger ......... close crosses OR High (long) / OR Low (short)
+ Trend ................. EMA20 vs EMA50
+ Momentum .............. VWAP, ADX>20, RVOL>1.5, NIFTY trend, Rel. Strength
+ Stop .................. Entry -/+ ATR(14) x 1.5   (rounded to Rs 0.05 tick)
+ Target ................ 2R (2 x risk)
+ Score to trade ........ 100 / 120  (>= 5 of 6 core filters)
+ Capital ............... Rs 100000
+ Risk per trade ........ 0.5%  (Rs 500)
+ Max trades/day ........ 2
+ Daily loss limit ...... Rs 2000
+ Daily profit limit .... Rs 3000
+ No new entries after .. 14:30
+ Force exit at ......... 15:20
+ Lunch skip ............ 12:00 - 13:00
+ Gap block ............. > 2% opening gap
+
+ (All of these are editable in: Strategy Settings -> Inputs)
+===============================================================================

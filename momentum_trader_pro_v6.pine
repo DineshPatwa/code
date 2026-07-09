@@ -1,0 +1,384 @@
+//@version=6
+// =============================================================================
+//  MOMENTUM TRADER PRO  —  V6  (Smart Filters + Entry Score)
+//  Platform : TradingView Pine Script v6   |   Market: NSE equities (intraday)
+//  Timezone : Asia/Kolkata                 |   Suggested TF: 5 min
+//
+//  BUILDS ON V3 (ORB + VWAP + EMA + Volume + ATR + 2R + ticket + sizing + dash)
+//
+//  V5 FILTERS  : Multi-timeframe (15m) trend confirmation, Gap guard, Lunch skip
+//  V6 FILTERS  : ADX(DMI) trend strength, NIFTY trend, Relative Strength vs NIFTY,
+//                EMA slope, ATR volatility band
+//  ENTRY SCORE : each filter contributes points; trade only if score >= threshold
+//                (objective, tunable — replaces the strict all-or-nothing gate)
+//
+//  NO-REPAINT — the important part the AI-snippet got wrong:
+//    * ta.adx() DOES NOT EXIST. Correct call is  ta.dmi(len, len) -> [ +DI,-DI,ADX ]
+//    * Higher-timeframe & NIFTY data use request.security(..., expr[1],
+//      lookahead = barmerge.lookahead_off) -> only the LAST CLOSED bar is read,
+//      so nothing repaints. (Naive request.security repaints and fakes backtests.)
+// =============================================================================
+
+strategy(
+     title              = "Momentum Trader Pro V6",
+     shorttitle         = "MTP v6",
+     overlay            = true,
+     pyramiding         = 0,
+     initial_capital    = 100000,
+     commission_type    = strategy.commission.percent,
+     commission_value   = 0.03,
+     slippage           = 2,
+     calc_on_every_tick = false,
+     process_orders_on_close = false)
+
+// -----------------------------------------------------------------------------
+//  INPUTS
+// -----------------------------------------------------------------------------
+tz = "Asia/Kolkata"
+
+grpOR   = "Opening Range"
+orStart = input.session("0915-0930", "OR window (build)", group = grpOR)
+
+grpTr   = "Trend / VWAP / Volume"
+emaFastLen = input.int(20, "EMA Fast", minval = 1, group = grpTr)
+emaSlowLen = input.int(50, "EMA Slow", minval = 1, group = grpTr)
+volLen     = input.int(20, "Volume avg length", minval = 1, group = grpTr)
+rvolThresh = input.float(1.5, "RVOL threshold", minval = 1.0, step = 0.1, group = grpTr)
+
+grpRisk = "Risk / Exits"
+atrLen  = input.int(14, "ATR length", minval = 1, group = grpRisk)
+atrMult = input.float(1.5, "ATR stop multiplier", minval = 0.1, step = 0.1, group = grpRisk)
+rrMult  = input.float(2.0, "Reward:Risk (target)", minval = 0.5, step = 0.5, group = grpRisk)
+
+grpDir  = "Direction"
+allowLongs  = input.bool(true, "Allow Longs", group = grpDir)
+allowShorts = input.bool(true, "Allow Shorts", group = grpDir)
+
+grpMM        = "Risk Management (V2)"
+maxTrades    = input.int(2, "Max trades / day", minval = 1, group = grpMM)
+dailyLoss    = input.float(2000, "Daily loss limit (₹)",   minval = 0, step = 100, group = grpMM)
+dailyProfit  = input.float(3000, "Daily profit limit (₹)", minval = 0, step = 100, group = grpMM)
+closeOnLimit = input.bool(true, "Close open trade when a daily limit is hit", group = grpMM)
+noNewAfter   = input.session("0930-1430", "New-entry window", group = grpMM)
+forceExitStr = input.session("1520-1525", "Force-exit window", group = grpMM)
+
+grpPS    = "Position Sizing (V7)"
+capital  = input.float(100000, "Capital (₹)",        minval = 0, step = 1000, group = grpPS)
+riskPct  = input.float(0.5,    "Risk per trade (%)", minval = 0.01, step = 0.1, group = grpPS)
+tickSize = input.float(0.05,   "Tick size (₹)",      minval = 0.01, step = 0.01, group = grpPS)
+useCalcQty = input.bool(true, "Size backtest orders by calculated Qty", group = grpPS)
+
+// ---- V5 filters ------------------------------------------------------------
+grpV5    = "V5 · Multi-TF / Gap / Lunch"
+useHtf   = input.bool(true, "Use 15m higher-TF trend", group = grpV5)
+htfTf    = input.timeframe("15", "Higher timeframe", group = grpV5)
+useGap   = input.bool(true, "Block huge opening gaps", group = grpV5)
+maxGapPct= input.float(2.0, "Max gap % vs prev close", minval = 0.1, step = 0.1, group = grpV5)
+skipLunch= input.bool(true, "Skip lunch (no new entries)", group = grpV5)
+lunchStr = input.session("1200-1300", "Lunch window", group = grpV5)
+
+// ---- V6 filters ------------------------------------------------------------
+grpV6      = "V6 · ADX / NIFTY / RelStrength"
+niftySym   = input.symbol("NSE:NIFTY", "Index symbol", group = grpV6)
+adxLen     = input.int(14, "ADX length", minval = 1, group = grpV6)
+adxThresh  = input.float(20, "ADX min", minval = 0, step = 1, group = grpV6)
+rsLookback = input.int(20, "Relative-strength lookback (bars)", minval = 1, group = grpV6)
+slopeLen   = input.int(3, "EMA slope lookback (bars)", minval = 1, group = grpV6)
+minAtrPct  = input.float(0.10, "Min ATR % of price", minval = 0.0, step = 0.05, group = grpV6)
+
+// ---- Entry Score weights (0 = filter off) ----------------------------------
+grpSc  = "Entry Score (weights, 0 = ignore)"
+wVwap  = input.int(20, "VWAP aligned",        minval = 0, group = grpSc)
+wEma   = input.int(20, "EMA20 vs EMA50",      minval = 0, group = grpSc)
+wAdx   = input.int(20, "ADX > min",           minval = 0, group = grpSc)
+wRvol  = input.int(20, "RVOL > threshold",    minval = 0, group = grpSc)
+wNifty = input.int(20, "NIFTY trend aligned", minval = 0, group = grpSc)
+wRs    = input.int(20, "Relative strength",   minval = 0, group = grpSc)
+wHtf   = input.int(0,  "15m trend aligned",   minval = 0, group = grpSc)
+wSlope = input.int(0,  "EMA slope aligned",   minval = 0, group = grpSc)
+wAtrV  = input.int(0,  "ATR volatility ok",   minval = 0, group = grpSc)
+scoreMin = input.int(100, "Minimum score to trade", minval = 0, group = grpSc,
+             tooltip = "Default 100 of a 120-point core = needs ~5 of 6 core filters.")
+
+// -----------------------------------------------------------------------------
+//  HELPERS
+// -----------------------------------------------------------------------------
+roundTick(p) => math.round(p / tickSize) * tickSize
+f2(x) => str.tostring(x, "#.##")
+
+// -----------------------------------------------------------------------------
+//  INDICATORS (chart timeframe)
+// -----------------------------------------------------------------------------
+emaFast = ta.ema(close, emaFastLen)
+emaSlow = ta.ema(close, emaSlowLen)
+vwap    = ta.vwap
+atr     = ta.atr(atrLen)
+volAvg  = ta.sma(volume, volLen)
+rvol    = volAvg > 0 ? volume / volAvg : 0.0
+atrPct  = close > 0 ? atr / close * 100 : 0.0
+[diPlus, diMinus, adxVal] = ta.dmi(adxLen, adxLen)     // correct ADX source
+
+// -----------------------------------------------------------------------------
+//  NO-REPAINT EXTERNAL DATA
+//  expr[1] + lookahead_off => value of the LAST CLOSED bar only.
+// -----------------------------------------------------------------------------
+htfEmaFast = request.security(syminfo.tickerid, htfTf, ta.ema(close, emaFastLen)[1], lookahead = barmerge.lookahead_off)
+htfEmaSlow = request.security(syminfo.tickerid, htfTf, ta.ema(close, emaSlowLen)[1], lookahead = barmerge.lookahead_off)
+
+niftyClose = request.security(niftySym, timeframe.period, close[1],            lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
+niftyEmaF  = request.security(niftySym, timeframe.period, ta.ema(close, 20)[1], lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
+niftyEmaS  = request.security(niftySym, timeframe.period, ta.ema(close, 50)[1], lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
+niftyVwap  = request.security(niftySym, timeframe.period, ta.vwap[1],           lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
+
+// -----------------------------------------------------------------------------
+//  SESSION / OPENING RANGE
+// -----------------------------------------------------------------------------
+inOR    = not na(time(timeframe.period, orStart, tz))
+newDay  = ta.change(time("D")) != 0
+
+var float orHigh   = na
+var float orLow    = na
+var bool  orReady  = false
+var float prevClose = na       // for gap calc: yesterday's last close
+
+if newDay
+    prevClose := close[1]      // close of the final bar of the previous day
+    orHigh  := na
+    orLow   := na
+    orReady := false
+
+if inOR
+    orHigh := na(orHigh) ? high : math.max(orHigh, high)
+    orLow  := na(orLow)  ? low  : math.min(orLow, low)
+
+if (not inOR) and (not na(orHigh)) and (not orReady) and (not newDay)
+    orReady := true
+
+// gap % = today's first bar open vs yesterday's close
+var float dayOpen = na
+if newDay
+    dayOpen := open
+gapPct = (not na(prevClose)) and prevClose != 0 ? math.abs(dayOpen - prevClose) / prevClose * 100 : 0.0
+
+// -----------------------------------------------------------------------------
+//  DAILY STATE (V2)
+// -----------------------------------------------------------------------------
+var int   tradesToday   = 0
+var float dayStartNet   = 0.0
+var bool  limitHitToday = false
+
+if newDay
+    tradesToday   := 0
+    dayStartNet   := strategy.netprofit
+    limitHitToday := false
+
+dailyPnL  = (strategy.netprofit - dayStartNet) + strategy.openprofit
+lossHit   = dailyLoss   > 0 and dailyPnL <= -dailyLoss
+profitHit = dailyProfit > 0 and dailyPnL >=  dailyProfit
+if lossHit or profitHit
+    limitHitToday := true
+
+inEntryWindow = not na(time(timeframe.period, noNewAfter,   tz))
+inForceExit   = not na(time(timeframe.period, forceExitStr, tz))
+inLunch       = not na(time(timeframe.period, lunchStr,     tz))
+
+// -----------------------------------------------------------------------------
+//  DIRECTIONAL FILTER BOOLEANS
+// -----------------------------------------------------------------------------
+// long-side
+lVwap  = close > vwap
+lEma   = emaFast > emaSlow
+lNifty = (not na(niftyClose)) and niftyClose > niftyVwap and niftyEmaF > niftyEmaS
+lHtf   = htfEmaFast > htfEmaSlow
+lSlope = emaFast > emaFast[slopeLen]
+// short-side
+sVwap  = close < vwap
+sEma   = emaFast < emaSlow
+sNifty = (not na(niftyClose)) and niftyClose < niftyVwap and niftyEmaF < niftyEmaS
+sHtf   = htfEmaFast < htfEmaSlow
+sSlope = emaFast < emaFast[slopeLen]
+// non-directional
+adxOk   = adxVal > adxThresh
+rvolOk  = rvol > rvolThresh
+atrVolOk= atrPct >= minAtrPct
+
+// relative strength: stock % move minus NIFTY % move over lookback
+stockRet = close[rsLookback] != 0 ? (close - close[rsLookback]) / close[rsLookback] * 100 : 0.0
+niftyRet = (not na(niftyClose[rsLookback])) and niftyClose[rsLookback] != 0 ? (niftyClose - niftyClose[rsLookback]) / niftyClose[rsLookback] * 100 : 0.0
+rs = stockRet - niftyRet
+lRs = rs > 0
+sRs = rs < 0
+
+// -----------------------------------------------------------------------------
+//  ENTRY SCORE  (per direction)
+// -----------------------------------------------------------------------------
+maxScore = wVwap + wEma + wAdx + wRvol + wNifty + wRs + wHtf + wSlope + wAtrV
+
+scoreLong = (lVwap ? wVwap : 0) + (lEma ? wEma : 0) + (adxOk ? wAdx : 0) + (rvolOk ? wRvol : 0) + (lNifty ? wNifty : 0) + (lRs ? wRs : 0) + ((useHtf and lHtf) ? wHtf : 0) + (lSlope ? wSlope : 0) + (atrVolOk ? wAtrV : 0)
+
+scoreShort = (sVwap ? wVwap : 0) + (sEma ? wEma : 0) + (adxOk ? wAdx : 0) + (rvolOk ? wRvol : 0) + (sNifty ? wNifty : 0) + (sRs ? wRs : 0) + ((useHtf and sHtf) ? wHtf : 0) + (sSlope ? wSlope : 0) + (atrVolOk ? wAtrV : 0)
+
+// -----------------------------------------------------------------------------
+//  HARD GATES + TRIGGER
+// -----------------------------------------------------------------------------
+afterOR   = orReady and (not inOR)
+isFlat    = strategy.position_size == 0
+gapOk     = (not useGap) or (gapPct <= maxGapPct)
+lunchOk   = (not skipLunch) or (not inLunch)
+canTrade  = afterOR and isFlat and inEntryWindow and (not inForceExit) and (tradesToday < maxTrades) and (not limitHitToday) and gapOk and lunchOk
+
+breakoutUp = ta.crossover(close, orHigh)
+breakoutDn = ta.crossunder(close, orLow)
+
+longSignal  = allowLongs  and canTrade and breakoutUp and scoreLong  >= scoreMin
+shortSignal = allowShorts and canTrade and breakoutDn and scoreShort >= scoreMin
+
+// -----------------------------------------------------------------------------
+//  TRADE TICKET + SIZING (V7) + ORDERS
+// -----------------------------------------------------------------------------
+var string tSide = "—"
+var float tEntry  = na
+var float tStop   = na
+var float tTgt    = na
+var float tRisk   = na
+var float tRiskRs = na
+var int   tQty = 0
+var int   tScore = 0
+
+sizeQty(riskPerShare) => riskPerShare > 0 ? math.floor((capital * riskPct / 100.0) / riskPerShare) : 0
+
+if longSignal
+    entry = close
+    stop  = roundTick(close - atr * atrMult)
+    risk  = entry - stop
+    qty   = sizeQty(risk)
+    if qty >= 1
+        tgt = roundTick(entry + risk * rrMult)
+        tSide   := "BUY"
+        tEntry  := entry
+        tStop   := stop
+        tTgt    := tgt
+        tRisk   := risk
+        tQty    := qty
+        tRiskRs := risk * qty
+        tScore  := scoreLong
+        tradesToday += 1
+        strategy.entry("Long", strategy.long, qty = useCalcQty ? qty : na)
+        strategy.exit("L-exit", from_entry = "Long", stop = stop, limit = tgt)
+
+if shortSignal
+    entry = close
+    stop  = roundTick(close + atr * atrMult)
+    risk  = stop - entry
+    qty   = sizeQty(risk)
+    if qty >= 1
+        tgt = roundTick(entry - risk * rrMult)
+        tSide   := "SELL"
+        tEntry  := entry
+        tStop   := stop
+        tTgt    := tgt
+        tRisk   := risk
+        tQty    := qty
+        tRiskRs := risk * qty
+        tScore  := scoreShort
+        tradesToday += 1
+        strategy.entry("Short", strategy.short, qty = useCalcQty ? qty : na)
+        strategy.exit("S-exit", from_entry = "Short", stop = stop, limit = tgt)
+
+if inForceExit and strategy.position_size != 0
+    strategy.close_all(comment = "EOD 15:20")
+if limitHitToday and closeOnLimit and strategy.position_size != 0
+    strategy.close_all(comment = lossHit ? "Daily loss limit" : "Daily profit limit")
+
+// -----------------------------------------------------------------------------
+//  TICKET LABEL + ALERT (V4)
+// -----------------------------------------------------------------------------
+buildTicket(side) =>
+    side + " " + syminfo.ticker + "\nEntry : " + f2(tEntry) + "\nStop  : " + f2(tStop) + "  (" + f2(tRisk) + "/sh)" + "\nTgt   : " + f2(tTgt) + "  (" + f2(rrMult) + "R)" + "\nQty   : " + str.tostring(tQty) + "\nRisk  : ₹" + f2(tRiskRs) + "\nScore : " + str.tostring(tScore) + "/" + str.tostring(maxScore)
+
+if longSignal and tSide == "BUY" and tQty >= 1
+    label.new(bar_index, low, buildTicket("🟢 BUY"), style = label.style_label_up,
+         color = color.new(color.green, 0), textcolor = color.white, size = size.normal)
+    alert(buildTicket("BUY"), alert.freq_once_per_bar_close)
+
+if shortSignal and tSide == "SELL" and tQty >= 1
+    label.new(bar_index, high, buildTicket("🔴 SELL"), style = label.style_label_down,
+         color = color.new(color.red, 0), textcolor = color.white, size = size.normal)
+    alert(buildTicket("SELL"), alert.freq_once_per_bar_close)
+
+// -----------------------------------------------------------------------------
+//  PLOTS
+// -----------------------------------------------------------------------------
+plot(emaFast, "EMA20", color = color.new(color.orange, 0))
+plot(emaSlow, "EMA50", color = color.new(color.blue, 0))
+plot(vwap,    "VWAP",  color = color.new(color.fuchsia, 0), linewidth = 2)
+plot(orReady or inOR ? orHigh : na, "OR High", color = color.new(color.teal, 0), style = plot.style_linebr)
+plot(orReady or inOR ? orLow  : na, "OR Low",  color = color.new(color.red, 0),  style = plot.style_linebr)
+bgcolor(inOR ? color.new(color.gray, 88) : na, title = "OR window")
+bgcolor(skipLunch and inLunch ? color.new(color.orange, 90) : na, title = "Lunch skip")
+bgcolor(limitHitToday ? color.new(color.red, 90) : na, title = "Day halted")
+
+inTrade = strategy.position_size != 0
+plot(inTrade ? tStop : na, "Live Stop",   color = color.new(color.red, 0),   style = plot.style_linebr)
+plot(inTrade ? tTgt  : na, "Live Target", color = color.new(color.green, 0), style = plot.style_linebr)
+
+// -----------------------------------------------------------------------------
+//  DASHBOARD (top-right)
+// -----------------------------------------------------------------------------
+wr = strategy.closedtrades > 0 ? strategy.wintrades / strategy.closedtrades * 100 : 0.0
+pf = strategy.grossloss > 0 ? strategy.grossprofit / strategy.grossloss : na
+liveScoreL = allowLongs ? scoreLong : 0
+liveScoreS = allowShorts ? scoreShort : 0
+liveScore  = math.max(liveScoreL, liveScoreS)
+
+var table dash = table.new(position.top_right, 2, 10, border_width = 1)
+if barstate.islast
+    hd = color.new(color.gray, 20)
+    bd = color.new(color.black, 20)
+    plCol = dailyPnL >= 0 ? color.lime : color.red
+    scCol = liveScore >= scoreMin ? color.lime : color.orange
+    table.cell(dash, 0, 0, "Momentum Trader Pro", text_color = color.white, bgcolor = color.new(color.blue, 20))
+    table.cell(dash, 1, 0, "V6", text_color = color.white, bgcolor = color.new(color.blue, 20))
+    table.cell(dash, 0, 1, "Momentum Score", text_color = color.white, bgcolor = hd)
+    table.cell(dash, 1, 1, str.tostring(liveScore) + "/" + str.tostring(maxScore), text_color = scCol, bgcolor = bd)
+    table.cell(dash, 0, 2, "Trend", text_color = color.white, bgcolor = hd)
+    table.cell(dash, 1, 2, emaFast > emaSlow ? "Bull" : "Bear", text_color = emaFast > emaSlow ? color.lime : color.red, bgcolor = bd)
+    table.cell(dash, 0, 3, "ADX", text_color = color.white, bgcolor = hd)
+    table.cell(dash, 1, 3, f2(adxVal), text_color = adxOk ? color.lime : color.gray, bgcolor = bd)
+    table.cell(dash, 0, 4, "RVOL", text_color = color.white, bgcolor = hd)
+    table.cell(dash, 1, 4, f2(rvol) + "x", text_color = rvolOk ? color.lime : color.gray, bgcolor = bd)
+    table.cell(dash, 0, 5, "NIFTY", text_color = color.white, bgcolor = hd)
+    niftyBull = (not na(niftyEmaF)) and niftyEmaF > niftyEmaS
+    table.cell(dash, 1, 5, na(niftyClose) ? "n/a" : (niftyBull ? "Bull" : "Bear"), text_color = na(niftyClose) ? color.gray : (niftyBull ? color.lime : color.red), bgcolor = bd)
+    table.cell(dash, 0, 6, "Rel Strength", text_color = color.white, bgcolor = hd)
+    table.cell(dash, 1, 6, f2(rs) + "%", text_color = rs >= 0 ? color.lime : color.red, bgcolor = bd)
+    table.cell(dash, 0, 7, "Today's Trades", text_color = color.white, bgcolor = hd)
+    table.cell(dash, 1, 7, str.tostring(tradesToday) + " / " + str.tostring(maxTrades), text_color = color.white, bgcolor = bd)
+    table.cell(dash, 0, 8, "Today's P/L", text_color = color.white, bgcolor = hd)
+    table.cell(dash, 1, 8, "₹" + f2(dailyPnL), text_color = plCol, bgcolor = bd)
+    table.cell(dash, 0, 9, "Win% / PF", text_color = color.white, bgcolor = hd)
+    table.cell(dash, 1, 9, f2(wr) + "% / " + (na(pf) ? "—" : f2(pf)), text_color = color.white, bgcolor = bd)
+
+// -----------------------------------------------------------------------------
+//  TRADE TICKET PANEL (bottom-right)
+// -----------------------------------------------------------------------------
+var table tkt = table.new(position.bottom_right, 2, 7, border_width = 1)
+if barstate.islast
+    sideCol = tSide == "BUY" ? color.new(color.green, 15) : tSide == "SELL" ? color.new(color.red, 15) : color.new(color.gray, 30)
+    hd2 = color.new(color.gray, 20)
+    bd2 = color.new(color.black, 20)
+    stat = strategy.position_size > 0 ? "IN LONG" : strategy.position_size < 0 ? "IN SHORT" : "FLAT / last"
+    table.cell(tkt, 0, 0, "TRADE TICKET", text_color = color.white, bgcolor = sideCol)
+    table.cell(tkt, 1, 0, tSide, text_color = color.white, bgcolor = sideCol)
+    table.cell(tkt, 0, 1, "Entry", text_color = color.white, bgcolor = hd2)
+    table.cell(tkt, 1, 1, na(tEntry) ? "—" : f2(tEntry), text_color = color.white, bgcolor = bd2)
+    table.cell(tkt, 0, 2, "Stop Loss", text_color = color.white, bgcolor = hd2)
+    table.cell(tkt, 1, 2, na(tStop) ? "—" : f2(tStop), text_color = color.red, bgcolor = bd2)
+    table.cell(tkt, 0, 3, "Target", text_color = color.white, bgcolor = hd2)
+    table.cell(tkt, 1, 3, na(tTgt) ? "—" : f2(tTgt), text_color = color.lime, bgcolor = bd2)
+    table.cell(tkt, 0, 4, "Risk / share", text_color = color.white, bgcolor = hd2)
+    table.cell(tkt, 1, 4, na(tRisk) ? "—" : "₹" + f2(tRisk), text_color = color.white, bgcolor = bd2)
+    table.cell(tkt, 0, 5, "Quantity", text_color = color.white, bgcolor = hd2)
+    table.cell(tkt, 1, 5, tQty < 1 ? "—" : str.tostring(tQty), text_color = color.yellow, bgcolor = bd2)
+    table.cell(tkt, 0, 6, "Total Risk", text_color = color.white, bgcolor = hd2)
+    table.cell(tkt, 1, 6, na(tRiskRs) ? "—" : "₹" + f2(tRiskRs) + "  (" + stat + ")", text_color = color.white, bgcolor = bd2)
