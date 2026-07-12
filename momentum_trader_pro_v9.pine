@@ -1,0 +1,560 @@
+//@version=6
+// =============================================================================
+//  MOMENTUM TRADER PRO  —  V9  (Guardrails + Trailing Stops)
+//  Platform : TradingView Pine Script v6   |   Market: NSE equities (intraday)
+//  Timezone : Asia/Kolkata                 |   Suggested TF: 5 min
+//
+//  BUILDS ON V6 (ORB + VWAP + EMA + Vol + ATR + score + ticket + sizing + dash)
+//
+//  V8 GUARDRAILS (from the HINDCOPPER double-tap fakeout post-mortem):
+//    1. Hard-gate Relative Strength  — no long if RS not aligned, no matter the
+//       score elsewhere; symmetric for shorts.            (useHardRs)
+//    2. Cooldown near a stopped level — block a same-direction signal if price
+//       re-enters within cooldownAtrMult x ATR of a level that stopped us out
+//       within the last cooldownBars bars.                (useCooldown)
+//    3. Gap-wide stop — for the first gapBoostBars bars after OR completes, if
+//       today's gap >= gapBoostThresh, widen the ATR stop by gapAtrBoostMult
+//       (ATR(14) lags a fresh volatility regime). Risk sizing + target scale
+//       with it, so R:R stays intact.                     (useGapBoost)
+//
+//  V9 TRAILING (from the "ran to 511 then hit SL" post-mortem):
+//    4. Breakeven move    — once profit >= beTrigger R, stop -> entry + ATR buf.
+//                                                          (useBreakeven)
+//    5. ATR chandelier    — once profit >= trailTrigger R, stop trails the best
+//       price reached by trailMult x ATR, ratcheting only in our favour.
+//                                                          (useTrail)
+//    Both only TIGHTEN the stop, never widen it — original risk is never raised.
+//
+//  NO-REPAINT: ta.dmi() for ADX; request.security(..., expr[1], lookahead_off)
+//  for all HTF/NIFTY data -> last closed bar only.
+// =============================================================================
+
+strategy(
+     title              = "Momentum Trader Pro V9",
+     shorttitle         = "MTP v9",
+     overlay            = true,
+     pyramiding         = 0,
+     initial_capital    = 100000,
+     commission_type    = strategy.commission.percent,
+     commission_value   = 0.03,
+     slippage           = 2,
+     calc_on_every_tick = false,
+     process_orders_on_close = false)
+
+// -----------------------------------------------------------------------------
+//  INPUTS
+// -----------------------------------------------------------------------------
+tz = "Asia/Kolkata"
+
+grpOR   = "Opening Range"
+orStart = input.session("0915-0930", "OR window (build)", group = grpOR)
+
+grpTr   = "Trend / VWAP / Volume"
+emaFastLen = input.int(20, "EMA Fast", minval = 1, group = grpTr)
+emaSlowLen = input.int(50, "EMA Slow", minval = 1, group = grpTr)
+volLen     = input.int(20, "Volume avg length", minval = 1, group = grpTr)
+rvolThresh = input.float(1.5, "RVOL threshold", minval = 1.0, step = 0.1, group = grpTr)
+
+grpRisk = "Risk / Exits"
+atrLen  = input.int(14, "ATR length", minval = 1, group = grpRisk)
+atrMult = input.float(1.5, "ATR stop multiplier", minval = 0.1, step = 0.1, group = grpRisk)
+rrMult  = input.float(2.0, "Reward:Risk (target)", minval = 0.5, step = 0.5, group = grpRisk)
+
+grpDir  = "Direction"
+allowLongs  = input.bool(true, "Allow Longs", group = grpDir)
+allowShorts = input.bool(true, "Allow Shorts", group = grpDir)
+
+grpMM        = "Risk Management (V2)"
+maxTrades    = input.int(2, "Max trades / day", minval = 1, group = grpMM)
+dailyLoss    = input.float(2000, "Daily loss limit (₹)",   minval = 0, step = 100, group = grpMM)
+dailyProfit  = input.float(3000, "Daily profit limit (₹)", minval = 0, step = 100, group = grpMM)
+closeOnLimit = input.bool(true, "Close open trade when a daily limit is hit", group = grpMM)
+noNewAfter   = input.session("0930-1430", "New-entry window", group = grpMM)
+forceExitStr = input.session("1520-1525", "Force-exit window", group = grpMM)
+
+grpPS    = "Position Sizing (V7)"
+capital  = input.float(100000, "Capital (₹)",        minval = 0, step = 1000, group = grpPS)
+riskPct  = input.float(0.5,    "Risk per trade (%)", minval = 0.01, step = 0.1, group = grpPS)
+tickSize = input.float(0.05,   "Tick size (₹)",      minval = 0.01, step = 0.01, group = grpPS)
+useCalcQty = input.bool(true, "Size backtest orders by calculated Qty", group = grpPS)
+
+// ---- V5 filters ------------------------------------------------------------
+grpV5    = "V5 · Multi-TF / Gap / Lunch"
+useHtf   = input.bool(true, "Use 15m higher-TF trend", group = grpV5)
+htfTf    = input.timeframe("15", "Higher timeframe", group = grpV5)
+useGap   = input.bool(true, "Block huge opening gaps", group = grpV5)
+maxGapPct= input.float(2.0, "Max gap % vs prev close", minval = 0.1, step = 0.1, group = grpV5)
+skipLunch= input.bool(true, "Skip lunch (no new entries)", group = grpV5)
+lunchStr = input.session("1200-1300", "Lunch window", group = grpV5)
+
+// ---- V6 filters ------------------------------------------------------------
+grpV6      = "V6 · ADX / NIFTY / RelStrength"
+niftySym   = input.symbol("NSE:NIFTY", "Index symbol", group = grpV6)
+adxLen     = input.int(14, "ADX length", minval = 1, group = grpV6)
+adxThresh  = input.float(20, "ADX min", minval = 0, step = 1, group = grpV6)
+rsLookback = input.int(20, "Relative-strength lookback (bars)", minval = 1, group = grpV6)
+slopeLen   = input.int(3, "EMA slope lookback (bars)", minval = 1, group = grpV6)
+minAtrPct  = input.float(0.10, "Min ATR % of price", minval = 0.0, step = 0.05, group = grpV6)
+
+// ---- V8 guardrails ---------------------------------------------------------
+grpV8       = "V8 · Guardrails"
+useHardRs   = input.bool(true,  "Hard-gate Relative Strength", group = grpV8,
+                 tooltip = "No long unless RS>0, no short unless RS<0 — overrides score.")
+useCooldown = input.bool(true,  "Cooldown near a just-stopped level", group = grpV8)
+cooldownAtrMult = input.float(0.5, "Cooldown band (x ATR)", minval = 0.0, step = 0.1, group = grpV8,
+                 tooltip = "Block a same-direction re-entry within this x ATR of the stopped level. Widen to 0.75-1.0 if the symbol chops around round levels.")
+cooldownBars = input.int(6, "Cooldown length (bars)", minval = 0, group = grpV8)
+useGapBoost = input.bool(true,  "Gap-wide stop after the open", group = grpV8)
+gapBoostThresh = input.float(0.3, "Gap boost triggers at gap % >=", minval = 0.0, step = 0.1, group = grpV8)
+gapBoostBars = input.int(6, "Gap boost active for first N bars after OR", minval = 0, group = grpV8)
+gapAtrBoostMult = input.float(1.5, "Gap boost stop multiplier (x normal)", minval = 1.0, step = 0.1, group = grpV8)
+
+// ---- V9 trailing -----------------------------------------------------------
+grpV9      = "V9 · Trailing Stops"
+useBreakeven = input.bool(true, "Breakeven move", group = grpV9,
+                 tooltip = "Once profit >= trigger R, move stop to entry + ATR buffer.")
+beTrigger  = input.float(1.0, "Breakeven trigger (R)", minval = 0.1, step = 0.1, group = grpV9)
+beBuffer   = input.float(0.1, "Breakeven buffer (x ATR)", minval = 0.0, step = 0.05, group = grpV9,
+                 tooltip = "Small offset past entry so costs/slippage are covered.")
+useTrail   = input.bool(true, "ATR chandelier trail", group = grpV9)
+trailTrigger = input.float(1.0, "Trail arms at profit (R)", minval = 0.1, step = 0.1, group = grpV9)
+trailMult  = input.float(2.0, "Chandelier distance (x ATR)", minval = 0.1, step = 0.1, group = grpV9,
+                 tooltip = "Stop trails this far behind the best price reached since entry.")
+
+// ---- V9 scale-out (partial booking) ----------------------------------------
+grpSO       = "V9 · Scale-Out (book part at TP1)"
+useScaleOut = input.bool(true, "Book part of the position at TP1", group = grpSO,
+                 tooltip = "Sell a tranche at TP1, move the runner's stop to breakeven, trail the rest.")
+scaleOutR   = input.float(1.0, "Book first tranche at (R)", minval = 0.1, step = 0.1, group = grpSO)
+scaleOutPct = input.float(50, "Percent booked at TP1", minval = 1, maxval = 99, step = 5, group = grpSO)
+runnerFixedTgt = input.bool(false, "Runner uses a FIXED target instead of trailing", group = grpSO,
+                 tooltip = "OFF (default) = trail the runner via the chandelier so it can run past 2R. ON = exit the runner at a fixed R target. Flip this to A/B the two.")
+runnerTgtR  = input.float(2.0, "Runner fixed target (R)", minval = 0.5, step = 0.5, group = grpSO,
+                 tooltip = "Only used when 'Runner uses a FIXED target' is ON.")
+
+// ---- Entry Score weights (0 = filter off) ----------------------------------
+grpSc  = "Entry Score (weights, 0 = ignore)"
+wVwap  = input.int(20, "VWAP aligned",        minval = 0, group = grpSc)
+wEma   = input.int(20, "EMA20 vs EMA50",      minval = 0, group = grpSc)
+wAdx   = input.int(20, "ADX > min",           minval = 0, group = grpSc)
+wRvol  = input.int(20, "RVOL > threshold",    minval = 0, group = grpSc)
+wNifty = input.int(20, "NIFTY trend aligned", minval = 0, group = grpSc)
+wRs    = input.int(20, "Relative strength",   minval = 0, group = grpSc)
+wHtf   = input.int(0,  "15m trend aligned",   minval = 0, group = grpSc)
+wSlope = input.int(0,  "EMA slope aligned",   minval = 0, group = grpSc)
+wAtrV  = input.int(0,  "ATR volatility ok",   minval = 0, group = grpSc)
+scoreMin = input.int(100, "Minimum score to trade", minval = 0, group = grpSc,
+             tooltip = "Default 100 of a 120-point core = needs ~5 of 6 core filters.")
+
+// -----------------------------------------------------------------------------
+//  HELPERS
+// -----------------------------------------------------------------------------
+roundTick(p) => math.round(p / tickSize) * tickSize
+f2(x) => str.tostring(x, "#.##")
+
+// -----------------------------------------------------------------------------
+//  INDICATORS (chart timeframe)
+// -----------------------------------------------------------------------------
+emaFast = ta.ema(close, emaFastLen)
+emaSlow = ta.ema(close, emaSlowLen)
+vwap    = ta.vwap
+atr     = ta.atr(atrLen)
+volAvg  = ta.sma(volume, volLen)
+rvol    = volAvg > 0 ? volume / volAvg : 0.0
+atrPct  = close > 0 ? atr / close * 100 : 0.0
+[diPlus, diMinus, adxVal] = ta.dmi(adxLen, adxLen)     // correct ADX source
+
+// -----------------------------------------------------------------------------
+//  NO-REPAINT EXTERNAL DATA
+// -----------------------------------------------------------------------------
+htfEmaFast = request.security(syminfo.tickerid, htfTf, ta.ema(close, emaFastLen)[1], lookahead = barmerge.lookahead_off)
+htfEmaSlow = request.security(syminfo.tickerid, htfTf, ta.ema(close, emaSlowLen)[1], lookahead = barmerge.lookahead_off)
+
+niftyClose = request.security(niftySym, timeframe.period, close[1],            lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
+niftyEmaF  = request.security(niftySym, timeframe.period, ta.ema(close, 20)[1], lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
+niftyEmaS  = request.security(niftySym, timeframe.period, ta.ema(close, 50)[1], lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
+niftyVwap  = request.security(niftySym, timeframe.period, ta.vwap[1],           lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
+
+// -----------------------------------------------------------------------------
+//  SESSION / OPENING RANGE
+// -----------------------------------------------------------------------------
+inOR    = not na(time(timeframe.period, orStart, tz))
+newDay  = ta.change(time("D")) != 0
+
+var float orHigh    = na
+var float orLow     = na
+var bool  orReady   = false
+var int   orReadyBar= na       // V8: bar the OR completed, for gap-boost window
+var float prevClose = na
+
+if newDay
+    prevClose := close[1]
+    orHigh   := na
+    orLow    := na
+    orReady  := false
+    orReadyBar := na
+
+if inOR
+    orHigh := na(orHigh) ? high : math.max(orHigh, high)
+    orLow  := na(orLow)  ? low  : math.min(orLow, low)
+
+if (not inOR) and (not na(orHigh)) and (not orReady) and (not newDay)
+    orReady    := true
+    orReadyBar := bar_index
+
+// gap % = today's first bar open vs yesterday's close
+var float dayOpen = na
+if newDay
+    dayOpen := open
+gapPct = (not na(prevClose)) and prevClose != 0 ? math.abs(dayOpen - prevClose) / prevClose * 100 : 0.0
+
+// -----------------------------------------------------------------------------
+//  DAILY STATE (V2)
+// -----------------------------------------------------------------------------
+var int   tradesToday   = 0
+var float dayStartNet   = 0.0
+var bool  limitHitToday = false
+
+if newDay
+    tradesToday   := 0
+    dayStartNet   := strategy.netprofit
+    limitHitToday := false
+
+dailyPnL  = (strategy.netprofit - dayStartNet) + strategy.openprofit
+lossHit   = dailyLoss   > 0 and dailyPnL <= -dailyLoss
+profitHit = dailyProfit > 0 and dailyPnL >=  dailyProfit
+if lossHit or profitHit
+    limitHitToday := true
+
+inEntryWindow = not na(time(timeframe.period, noNewAfter,   tz))
+inForceExit   = not na(time(timeframe.period, forceExitStr, tz))
+inLunch       = not na(time(timeframe.period, lunchStr,     tz))
+
+// -----------------------------------------------------------------------------
+//  DIRECTIONAL FILTER BOOLEANS
+// -----------------------------------------------------------------------------
+lVwap  = close > vwap
+lEma   = emaFast > emaSlow
+lNifty = (not na(niftyClose)) and niftyClose > niftyVwap and niftyEmaF > niftyEmaS
+lHtf   = htfEmaFast > htfEmaSlow
+lSlope = emaFast > emaFast[slopeLen]
+sVwap  = close < vwap
+sEma   = emaFast < emaSlow
+sNifty = (not na(niftyClose)) and niftyClose < niftyVwap and niftyEmaF < niftyEmaS
+sHtf   = htfEmaFast < htfEmaSlow
+sSlope = emaFast < emaFast[slopeLen]
+adxOk   = adxVal > adxThresh
+rvolOk  = rvol > rvolThresh
+atrVolOk= atrPct >= minAtrPct
+
+stockRet = close[rsLookback] != 0 ? (close - close[rsLookback]) / close[rsLookback] * 100 : 0.0
+niftyRet = (not na(niftyClose[rsLookback])) and niftyClose[rsLookback] != 0 ? (niftyClose - niftyClose[rsLookback]) / niftyClose[rsLookback] * 100 : 0.0
+rs = stockRet - niftyRet
+lRs = rs > 0
+sRs = rs < 0
+
+// -----------------------------------------------------------------------------
+//  ENTRY SCORE  (per direction)
+// -----------------------------------------------------------------------------
+maxScore = wVwap + wEma + wAdx + wRvol + wNifty + wRs + wHtf + wSlope + wAtrV
+
+scoreLong = (lVwap ? wVwap : 0) + (lEma ? wEma : 0) + (adxOk ? wAdx : 0) + (rvolOk ? wRvol : 0) + (lNifty ? wNifty : 0) + (lRs ? wRs : 0) + ((useHtf and lHtf) ? wHtf : 0) + (lSlope ? wSlope : 0) + (atrVolOk ? wAtrV : 0)
+
+scoreShort = (sVwap ? wVwap : 0) + (sEma ? wEma : 0) + (adxOk ? wAdx : 0) + (rvolOk ? wRvol : 0) + (sNifty ? wNifty : 0) + (sRs ? wRs : 0) + ((useHtf and sHtf) ? wHtf : 0) + (sSlope ? wSlope : 0) + (atrVolOk ? wAtrV : 0)
+
+// -----------------------------------------------------------------------------
+//  V8 · COOLDOWN — remember the level a losing trade stopped us out at
+// -----------------------------------------------------------------------------
+var float stoppedLvl     = na
+var int   stoppedBar     = na
+var bool  stoppedWasLong = false
+
+justFlat = strategy.position_size == 0 and strategy.position_size[1] != 0
+if justFlat
+    lastIdx = strategy.closedtrades - 1
+    if lastIdx >= 0 and strategy.closedtrades.profit(lastIdx) < 0
+        stoppedLvl     := strategy.closedtrades.exit_price(lastIdx)
+        stoppedBar     := bar_index
+        stoppedWasLong := strategy.position_size[1] > 0
+
+cdRecent    = useCooldown and (not na(stoppedBar)) and (not na(stoppedLvl)) and (bar_index - stoppedBar <= cooldownBars)
+cdNearLevel = cdRecent and math.abs(close - stoppedLvl) <= cooldownAtrMult * atr
+cdBlockLong  = cdNearLevel and stoppedWasLong
+cdBlockShort = cdNearLevel and (not stoppedWasLong)
+
+// -----------------------------------------------------------------------------
+//  V8 · GAP-WIDE STOP — widen ATR mult in the first N bars after OR on gap days
+// -----------------------------------------------------------------------------
+gapBoostActive = useGapBoost and orReady and (not na(orReadyBar)) and (bar_index - orReadyBar < gapBoostBars) and gapPct >= gapBoostThresh
+effAtrMult     = gapBoostActive ? atrMult * gapAtrBoostMult : atrMult
+
+// -----------------------------------------------------------------------------
+//  HARD GATES + TRIGGER
+// -----------------------------------------------------------------------------
+afterOR   = orReady and (not inOR)
+isFlat    = strategy.position_size == 0
+gapOk     = (not useGap) or (gapPct <= maxGapPct)
+lunchOk   = (not skipLunch) or (not inLunch)
+canTrade  = afterOR and isFlat and inEntryWindow and (not inForceExit) and (tradesToday < maxTrades) and (not limitHitToday) and gapOk and lunchOk
+
+// V8 hard-gate RS: overrides the score entirely
+rsGateLong  = (not useHardRs) or lRs
+rsGateShort = (not useHardRs) or sRs
+
+breakoutUp = ta.crossover(close, orHigh)
+breakoutDn = ta.crossunder(close, orLow)
+
+longSignal  = allowLongs  and canTrade and breakoutUp and scoreLong  >= scoreMin and rsGateLong  and (not cdBlockLong)
+shortSignal = allowShorts and canTrade and breakoutDn and scoreShort >= scoreMin and rsGateShort and (not cdBlockShort)
+
+// -----------------------------------------------------------------------------
+//  TRADE TICKET + SIZING (V7) + ORDERS
+// -----------------------------------------------------------------------------
+var string tSide = "—"
+var float tEntry  = na
+var float tStop   = na       // initial (fixed) stop — defines original risk
+var float tTgt    = na
+var float tRisk   = na
+var float tRiskRs = na
+var int   tQty = 0
+var int   tScore = 0
+var bool  tGapWide = false    // did the gap-wide stop apply on this trade?
+
+// V9 live-managed stop + best-price tracker (only tightens)
+var float liveStop = na
+var float trailPeak = na
+
+// V9 scale-out state
+var bool  tp1Done   = false    // has the first tranche been booked this trade?
+var float tTp1      = na       // TP1 price (na = no scale-out on this trade)
+var float tRunTgt   = na       // runner fixed target price (na = trailing runner)
+var int   tp1Qty    = 0        // shares booked at TP1 (display)
+var int   runnerQty = 0        // shares left as the runner (display)
+
+sizeQty(riskPerShare) => riskPerShare > 0 ? math.floor((capital * riskPct / 100.0) / riskPerShare) : 0
+
+if longSignal
+    entry = close
+    stop  = roundTick(close - atr * effAtrMult)
+    risk  = entry - stop
+    qty   = sizeQty(risk)
+    if qty >= 1
+        tgt  = roundTick(entry + risk * rrMult)
+        tp1  = roundTick(entry + risk * scaleOutR)
+        rtgt = roundTick(entry + risk * runnerTgtR)
+        doSplit = useScaleOut and qty >= 2
+        tSide   := "BUY"
+        tEntry  := entry
+        tStop   := stop
+        tTgt    := tgt
+        tTp1    := doSplit ? tp1 : na
+        tRunTgt := (doSplit and runnerFixedTgt) ? rtgt : na
+        tRisk   := risk
+        tQty    := qty
+        tp1Qty    := doSplit ? int(math.floor(qty * scaleOutPct / 100.0)) : 0
+        runnerQty := doSplit ? int(qty) - tp1Qty : int(qty)
+        tRiskRs := risk * qty
+        tScore  := scoreLong
+        tGapWide:= gapBoostActive
+        liveStop := stop
+        trailPeak := high
+        tp1Done := false
+        tradesToday += 1
+        strategy.entry("Long", strategy.long, qty = useCalcQty ? qty : na)
+        if doSplit
+            strategy.exit("L-TP1", from_entry = "Long", qty_percent = scaleOutPct, limit = tp1, stop = stop)
+            strategy.exit("L-Run", from_entry = "Long", stop = stop, limit = runnerFixedTgt ? rtgt : na)
+        else
+            strategy.exit("L-exit", from_entry = "Long", stop = stop, limit = tgt)
+
+if shortSignal
+    entry = close
+    stop  = roundTick(close + atr * effAtrMult)
+    risk  = stop - entry
+    qty   = sizeQty(risk)
+    if qty >= 1
+        tgt  = roundTick(entry - risk * rrMult)
+        tp1  = roundTick(entry - risk * scaleOutR)
+        rtgt = roundTick(entry - risk * runnerTgtR)
+        doSplit = useScaleOut and qty >= 2
+        tSide   := "SELL"
+        tEntry  := entry
+        tStop   := stop
+        tTgt    := tgt
+        tTp1    := doSplit ? tp1 : na
+        tRunTgt := (doSplit and runnerFixedTgt) ? rtgt : na
+        tRisk   := risk
+        tQty    := qty
+        tp1Qty    := doSplit ? int(math.floor(qty * scaleOutPct / 100.0)) : 0
+        runnerQty := doSplit ? int(qty) - tp1Qty : int(qty)
+        tRiskRs := risk * qty
+        tScore  := scoreShort
+        tGapWide:= gapBoostActive
+        liveStop := stop
+        trailPeak := low
+        tp1Done := false
+        tradesToday += 1
+        strategy.entry("Short", strategy.short, qty = useCalcQty ? qty : na)
+        if doSplit
+            strategy.exit("S-TP1", from_entry = "Short", qty_percent = scaleOutPct, limit = tp1, stop = stop)
+            strategy.exit("S-Run", from_entry = "Short", stop = stop, limit = runnerFixedTgt ? rtgt : na)
+        else
+            strategy.exit("S-exit", from_entry = "Short", stop = stop, limit = tgt)
+
+// -----------------------------------------------------------------------------
+//  V9 · TRAILING MANAGEMENT  (runs every bar while in a position)
+//  Only ever TIGHTENS liveStop; re-issues strategy.exit when it moves.
+// -----------------------------------------------------------------------------
+useTrailAny = useBreakeven or useTrail
+
+// ---- LONG runner management ----
+if strategy.position_size > 0 and (not na(tEntry)) and tRisk > 0
+    splitTrade = not na(tTp1)
+    // mark the tranche booked the moment price trades through TP1
+    if splitTrade and (not tp1Done) and high >= tTp1
+        tp1Done := true
+    if useTrailAny
+        trailPeak := math.max(trailPeak, high)
+        rMult   = (close - tEntry) / tRisk
+        newStop = liveStop
+        // breakeven arms at beTrigger R, OR immediately once the tranche is booked
+        if useBreakeven and (tp1Done or rMult >= beTrigger)
+            newStop := math.max(newStop, roundTick(tEntry + atr * beBuffer))
+        if useTrail and rMult >= trailTrigger
+            newStop := math.max(newStop, roundTick(trailPeak - atr * trailMult))
+        if newStop > liveStop and newStop < close
+            liveStop := newStop
+            exId  = splitTrade ? "L-Run" : "L-exit"
+            exLim = splitTrade ? (runnerFixedTgt ? tRunTgt : na) : tTgt
+            strategy.exit(exId, from_entry = "Long", stop = liveStop, limit = exLim)
+
+// ---- SHORT runner management ----
+if strategy.position_size < 0 and (not na(tEntry)) and tRisk > 0
+    splitTrade = not na(tTp1)
+    if splitTrade and (not tp1Done) and low <= tTp1
+        tp1Done := true
+    if useTrailAny
+        trailPeak := math.min(trailPeak, low)
+        rMult   = (tEntry - close) / tRisk
+        newStop = liveStop
+        if useBreakeven and (tp1Done or rMult >= beTrigger)
+            newStop := math.min(newStop, roundTick(tEntry - atr * beBuffer))
+        if useTrail and rMult >= trailTrigger
+            newStop := math.min(newStop, roundTick(trailPeak + atr * trailMult))
+        if newStop < liveStop and newStop > close
+            liveStop := newStop
+            exId  = splitTrade ? "S-Run" : "S-exit"
+            exLim = splitTrade ? (runnerFixedTgt ? tRunTgt : na) : tTgt
+            strategy.exit(exId, from_entry = "Short", stop = liveStop, limit = exLim)
+
+if inForceExit and strategy.position_size != 0
+    strategy.close_all(comment = "EOD 15:20")
+if limitHitToday and closeOnLimit and strategy.position_size != 0
+    strategy.close_all(comment = lossHit ? "Daily loss limit" : "Daily profit limit")
+
+// -----------------------------------------------------------------------------
+//  TICKET LABEL + ALERT (V4)
+// -----------------------------------------------------------------------------
+buildTicket(side) =>
+    tag  = tGapWide ? "  [gap-wide stop]" : ""
+    plan = na(tTp1) ? ("Tgt   : " + f2(tTgt) + "  (" + f2(rrMult) + "R)") : ("TP1   : " + f2(tTp1) + " x" + str.tostring(tp1Qty) + "  (" + f2(scaleOutR) + "R)" + "\nRunner: " + str.tostring(runnerQty) + (runnerFixedTgt ? (" -> " + f2(tRunTgt) + " (" + f2(runnerTgtR) + "R)") : " -> BE + trail"))
+    side + " " + syminfo.ticker + tag + "\nEntry : " + f2(tEntry) + "\nStop  : " + f2(tStop) + "  (" + f2(tRisk) + "/sh)\n" + plan + "\nQty   : " + str.tostring(tQty) + "\nRisk  : ₹" + f2(tRiskRs) + "\nScore : " + str.tostring(tScore) + "/" + str.tostring(maxScore)
+
+if longSignal and tSide == "BUY" and tQty >= 1
+    label.new(bar_index, low, buildTicket("🟢 BUY"), style = label.style_label_up,
+         color = color.new(color.green, 0), textcolor = color.white, size = size.normal)
+    alert(buildTicket("BUY"), alert.freq_once_per_bar_close)
+
+if shortSignal and tSide == "SELL" and tQty >= 1
+    label.new(bar_index, high, buildTicket("🔴 SELL"), style = label.style_label_down,
+         color = color.new(color.red, 0), textcolor = color.white, size = size.normal)
+    alert(buildTicket("SELL"), alert.freq_once_per_bar_close)
+
+// -----------------------------------------------------------------------------
+//  PLOTS
+// -----------------------------------------------------------------------------
+plot(emaFast, "EMA20", color = color.new(color.orange, 0))
+plot(emaSlow, "EMA50", color = color.new(color.blue, 0))
+plot(vwap,    "VWAP",  color = color.new(color.fuchsia, 0), linewidth = 2)
+plot(orReady or inOR ? orHigh : na, "OR High", color = color.new(color.teal, 0), style = plot.style_linebr)
+plot(orReady or inOR ? orLow  : na, "OR Low",  color = color.new(color.red, 0),  style = plot.style_linebr)
+bgcolor(inOR ? color.new(color.gray, 88) : na, title = "OR window")
+bgcolor(skipLunch and inLunch ? color.new(color.orange, 90) : na, title = "Lunch skip")
+bgcolor(limitHitToday ? color.new(color.red, 90) : na, title = "Day halted")
+bgcolor(gapBoostActive ? color.new(color.purple, 90) : na, title = "Gap-boost window")
+
+inTrade = strategy.position_size != 0
+plot(inTrade ? liveStop : na, "Live Stop (trailed)", color = color.new(color.red, 0),   style = plot.style_linebr, linewidth = 2)
+plot(inTrade and not na(tTp1) ? tTp1 : na, "TP1 (book half)", color = color.new(color.aqua, 0), style = plot.style_linebr)
+plot(inTrade ? (na(tTp1) ? tTgt : tRunTgt) : na, "Runner / Target", color = color.new(color.green, 0), style = plot.style_linebr)
+
+// -----------------------------------------------------------------------------
+//  DASHBOARD (top-right)
+// -----------------------------------------------------------------------------
+wr = strategy.closedtrades > 0 ? strategy.wintrades / strategy.closedtrades * 100 : 0.0
+pf = strategy.grossloss > 0 ? strategy.grossprofit / strategy.grossloss : na
+liveScoreL = allowLongs ? scoreLong : 0
+liveScoreS = allowShorts ? scoreShort : 0
+liveScore  = math.max(liveScoreL, liveScoreS)
+
+var table dash = table.new(position.top_right, 2, 12, border_width = 1)
+if barstate.islast
+    hd = color.new(color.gray, 20)
+    bd = color.new(color.black, 20)
+    plCol = dailyPnL >= 0 ? color.lime : color.red
+    scCol = liveScore >= scoreMin ? color.lime : color.orange
+    table.cell(dash, 0, 0, "Momentum Trader Pro", text_color = color.white, bgcolor = color.new(color.blue, 20))
+    table.cell(dash, 1, 0, "V9", text_color = color.white, bgcolor = color.new(color.blue, 20))
+    table.cell(dash, 0, 1, "Momentum Score", text_color = color.white, bgcolor = hd)
+    table.cell(dash, 1, 1, str.tostring(liveScore) + "/" + str.tostring(maxScore), text_color = scCol, bgcolor = bd)
+    table.cell(dash, 0, 2, "Trend", text_color = color.white, bgcolor = hd)
+    table.cell(dash, 1, 2, emaFast > emaSlow ? "Bull" : "Bear", text_color = emaFast > emaSlow ? color.lime : color.red, bgcolor = bd)
+    table.cell(dash, 0, 3, "ADX", text_color = color.white, bgcolor = hd)
+    table.cell(dash, 1, 3, f2(adxVal), text_color = adxOk ? color.lime : color.gray, bgcolor = bd)
+    table.cell(dash, 0, 4, "RVOL", text_color = color.white, bgcolor = hd)
+    table.cell(dash, 1, 4, f2(rvol) + "x", text_color = rvolOk ? color.lime : color.gray, bgcolor = bd)
+    table.cell(dash, 0, 5, "NIFTY", text_color = color.white, bgcolor = hd)
+    niftyBull = (not na(niftyEmaF)) and niftyEmaF > niftyEmaS
+    table.cell(dash, 1, 5, na(niftyClose) ? "n/a" : (niftyBull ? "Bull" : "Bear"), text_color = na(niftyClose) ? color.gray : (niftyBull ? color.lime : color.red), bgcolor = bd)
+    table.cell(dash, 0, 6, "Rel Strength", text_color = color.white, bgcolor = hd)
+    table.cell(dash, 1, 6, f2(rs) + "%", text_color = rs >= 0 ? color.lime : color.red, bgcolor = bd)
+    // V8 guardrails row
+    gr = (useHardRs ? "RS✓" : "RS·") + " " + (useCooldown ? "CD✓" : "CD·") + " " + (useGapBoost ? "GB✓" : "GB·")
+    table.cell(dash, 0, 7, "Guardrails", text_color = color.white, bgcolor = hd)
+    table.cell(dash, 1, 7, gr + (gapBoostActive ? " ⚡" : ""), text_color = color.aqua, bgcolor = bd)
+    // V9 exit-model row (scale-out / breakeven / trail)
+    tr = (useScaleOut ? "SO✓" : "SO·") + " " + (useBreakeven ? "BE✓" : "BE·") + " " + (useTrail ? "TR✓" : "TR·")
+    table.cell(dash, 0, 8, "Exit model", text_color = color.white, bgcolor = hd)
+    table.cell(dash, 1, 8, tr + (tp1Done ? " ½✓" : ""), text_color = color.orange, bgcolor = bd)
+    table.cell(dash, 0, 9, "Today's Trades", text_color = color.white, bgcolor = hd)
+    table.cell(dash, 1, 9, str.tostring(tradesToday) + " / " + str.tostring(maxTrades), text_color = color.white, bgcolor = bd)
+    table.cell(dash, 0, 10, "Today's P/L", text_color = color.white, bgcolor = hd)
+    table.cell(dash, 1, 10, "₹" + f2(dailyPnL), text_color = plCol, bgcolor = bd)
+    table.cell(dash, 0, 11, "Win% / PF", text_color = color.white, bgcolor = hd)
+    table.cell(dash, 1, 11, f2(wr) + "% / " + (na(pf) ? "—" : f2(pf)), text_color = color.white, bgcolor = bd)
+
+// -----------------------------------------------------------------------------
+//  TRADE TICKET PANEL (bottom-right)
+// -----------------------------------------------------------------------------
+var table tkt = table.new(position.bottom_right, 2, 8, border_width = 1)
+if barstate.islast
+    sideCol = tSide == "BUY" ? color.new(color.green, 15) : tSide == "SELL" ? color.new(color.red, 15) : color.new(color.gray, 30)
+    hd2 = color.new(color.gray, 20)
+    bd2 = color.new(color.black, 20)
+    stat = strategy.position_size > 0 ? ("IN LONG" + (tp1Done ? " · ½ booked" : "")) : strategy.position_size < 0 ? ("IN SHORT" + (tp1Done ? " · ½ booked" : "")) : "FLAT / last"
+    table.cell(tkt, 0, 0, "TRADE TICKET", text_color = color.white, bgcolor = sideCol)
+    table.cell(tkt, 1, 0, tSide + (tGapWide ? " ⚡" : ""), text_color = color.white, bgcolor = sideCol)
+    table.cell(tkt, 0, 1, "Entry", text_color = color.white, bgcolor = hd2)
+    table.cell(tkt, 1, 1, na(tEntry) ? "—" : f2(tEntry), text_color = color.white, bgcolor = bd2)
+    table.cell(tkt, 0, 2, "Stop (live)", text_color = color.white, bgcolor = hd2)
+    table.cell(tkt, 1, 2, na(liveStop) ? "—" : f2(liveStop), text_color = color.red, bgcolor = bd2)
+    table.cell(tkt, 0, 3, na(tTp1) ? "Target" : "TP1 / Runner", text_color = color.white, bgcolor = hd2)
+    table.cell(tkt, 1, 3, na(tTp1) ? (na(tTgt) ? "—" : f2(tTgt)) : (f2(tTp1) + " / " + (runnerFixedTgt ? f2(tRunTgt) : "trail")), text_color = color.lime, bgcolor = bd2)
+    table.cell(tkt, 0, 4, "Risk / share", text_color = color.white, bgcolor = hd2)
+    table.cell(tkt, 1, 4, na(tRisk) ? "—" : "₹" + f2(tRisk), text_color = color.white, bgcolor = bd2)
+    table.cell(tkt, 0, 5, na(tTp1) ? "Quantity" : "Qty (TP1+Run)", text_color = color.white, bgcolor = hd2)
+    table.cell(tkt, 1, 5, tQty < 1 ? "—" : (na(tTp1) ? str.tostring(tQty) : (str.tostring(tp1Qty) + " + " + str.tostring(runnerQty))), text_color = color.yellow, bgcolor = bd2)
+    table.cell(tkt, 0, 6, "Total Risk", text_color = color.white, bgcolor = hd2)
+    table.cell(tkt, 1, 6, na(tRiskRs) ? "—" : "₹" + f2(tRiskRs), text_color = color.white, bgcolor = bd2)
+    table.cell(tkt, 0, 7, "Status", text_color = color.white, bgcolor = hd2)
+    table.cell(tkt, 1, 7, stat, text_color = color.white, bgcolor = bd2)
